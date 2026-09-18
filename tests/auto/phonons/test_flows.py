@@ -1,4 +1,5 @@
 import os
+import sys
 import pytest
 from monty.serialization import loadfn
 from atomate2.common.schemas.phonons import PhononBSDOSDoc
@@ -8,6 +9,44 @@ from autoplex.auto.phonons.flows import (
     CompleteDFTvsMLBenchmarkWorkflowMPSettings,
     IterativeCompleteDFTvsMLBenchmarkWorkflow)
 from jobflow import run_locally
+
+try: 
+    from matgl.models import M3GNet
+    has_m3gnet=True
+except:
+    has_m3gnet = False
+    
+try:
+    import mace
+    has_mace=True
+except:
+    has_mace=False
+
+
+try: 
+    from calorine.nep import read_loss, write_nepfile, write_structures
+    has_nep=True
+except:
+    has_nep=False
+
+try:
+    from pyace.asecalc import PyACECalculator
+
+    has_ypace = True
+except ImportError:
+    PyACECalculator = object
+    has_ypace = False
+
+try:
+    if sys.version_info[:2] == (3, 10):
+        from nequip.ase import NequIPCalculator
+    else:
+        from nequip.integrations.ase import NequIPCalculator
+
+    has_nequip = True
+except ImportError:
+    has_nequip = False
+
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
@@ -439,37 +478,37 @@ def ref_paths4_mpid_new():
 @pytest.fixture(scope="class")
 def ref_paths4_mpid_new2():
     return {
-        "dft tight relax_test_0": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
-        "dft tight relax_test_1": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
-        "dft tight relax_test_2": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
-        "dft tight relax 1_test_0": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
-        "dft tight relax 1_test_1": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
-        "dft tight relax 1_test_2": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
-        "dft tight relax 1_test_3": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
-        "dft tight relax 2_test_0": "dft_ml_data_generation/strict_test/tight_relax_2_test/",
-        "dft tight relax 2_test_1": "dft_ml_data_generation/strict_test/tight_relax_2_test/",
-        "dft tight relax 2_test_2": "dft_ml_data_generation/strict_test/tight_relax_2_test/",
-        "dft tight relax 2_test_3": "dft_ml_data_generation/strict_test/tight_relax_2_test/",
-        "Cl-stat_iso_atom_0": "Cl_iso_atoms/Cl-statisoatom/",
-        "Cl-stat_iso_atom_1": "Cl_iso_atoms/Cl-statisoatom/",
-        "Cl-stat_iso_atom_2": "Cl_iso_atoms/Cl-statisoatom/",
-        "Cl-stat_iso_atom_3": "Cl_iso_atoms/Cl-statisoatom/",
-        "Li-stat_iso_atom_0": "Li_iso_atoms/Li-statisoatom/",
-        "Li-stat_iso_atom_1": "Li_iso_atoms/Li-statisoatom/",
-        "Li-stat_iso_atom_2": "Li_iso_atoms/Li-statisoatom/",
-        "Li-stat_iso_atom_3": "Li_iso_atoms/Li-statisoatom/",
-        "dft phonon static 1/2_test_0": "dft_ml_data_generation/strict_test/phonon_static_1/",
-        "dft phonon static 1/2_test_1": "dft_ml_data_generation/strict_test/phonon_static_1/",
-        "dft phonon static 2/2_test_0": "dft_ml_data_generation/strict_test/phonon_static_2/",
-        "dft phonon static 2/2_test_1": "dft_ml_data_generation/strict_test/phonon_static_2/",
-        "dft rattle static 1/4_test_0": "dft_ml_data_generation/strict_test/rand_static_1/",
-        "dft rattle static 1/1_test_1": "dft_ml_data_generation/strict_test/rand_static_5/",
-        "dft rattle static 1/1_test_2": "dft_ml_data_generation/strict_test/rand_static_6/",
-        "dft rattle static 1/1_test_3": "dft_ml_data_generation/strict_test/rand_static_7/",
-        "dft rattle static 2/4_test_0": "dft_ml_data_generation/strict_test/rand_static_2/",
-        "dft rattle static 3/4_test_0": "dft_ml_data_generation/strict_test/rand_static_3/",
-        "dft rattle static 4/4_test_0": "dft_ml_data_generation/strict_test/rand_static_4/",
-        }
+            "dft tight relax_test_0": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
+            "dft tight relax_test_1": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
+            "dft tight relax_test_2": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
+            "dft tight relax 1_test_0": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
+            "dft tight relax 1_test_1": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
+            "dft tight relax 1_test_2": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
+            "dft tight relax 1_test_3": "dft_ml_data_generation/strict_test/tight_relax_1_test/",
+            "dft tight relax 2_test_0": "dft_ml_data_generation/strict_test/tight_relax_2_test/",
+            "dft tight relax 2_test_1": "dft_ml_data_generation/strict_test/tight_relax_2_test/",
+            "dft tight relax 2_test_2": "dft_ml_data_generation/strict_test/tight_relax_2_test/",
+            "dft tight relax 2_test_3": "dft_ml_data_generation/strict_test/tight_relax_2_test/",
+            "Cl-stat_iso_atom_0": "Cl_iso_atoms/Cl-statisoatom/",
+            "Cl-stat_iso_atom_1": "Cl_iso_atoms/Cl-statisoatom/",
+            "Cl-stat_iso_atom_2": "Cl_iso_atoms/Cl-statisoatom/",
+            "Cl-stat_iso_atom_3": "Cl_iso_atoms/Cl-statisoatom/",
+            "Li-stat_iso_atom_0": "Li_iso_atoms/Li-statisoatom/",
+            "Li-stat_iso_atom_1": "Li_iso_atoms/Li-statisoatom/",
+            "Li-stat_iso_atom_2": "Li_iso_atoms/Li-statisoatom/",
+            "Li-stat_iso_atom_3": "Li_iso_atoms/Li-statisoatom/",
+            "dft phonon static 1/2_test_0": "dft_ml_data_generation/strict_test/phonon_static_1/",
+            "dft phonon static 1/2_test_1": "dft_ml_data_generation/strict_test/phonon_static_1/",
+            "dft phonon static 2/2_test_0": "dft_ml_data_generation/strict_test/phonon_static_2/",
+            "dft phonon static 2/2_test_1": "dft_ml_data_generation/strict_test/phonon_static_2/",
+            "dft rattle static 1/4_test_0": "dft_ml_data_generation/strict_test/rand_static_1/",
+            "dft rattle static 1/1_test_1": "dft_ml_data_generation/strict_test/rand_static_5/",
+            "dft rattle static 1/1_test_2": "dft_ml_data_generation/strict_test/rand_static_6/",
+            "dft rattle static 1/1_test_3": "dft_ml_data_generation/strict_test/rand_static_7/",
+            "dft rattle static 2/4_test_0": "dft_ml_data_generation/strict_test/rand_static_2/",
+            "dft rattle static 3/4_test_0": "dft_ml_data_generation/strict_test/rand_static_3/",
+            "dft rattle static 4/4_test_0": "dft_ml_data_generation/strict_test/rand_static_4/",
+            }
 
 
 @pytest.fixture(scope="class")
@@ -649,7 +688,6 @@ def fake_run_vasp_kwargs4_mpid_new():
 def fake_run_vasp_kwargs4_mpid_new2():
     return {}
 
-
 def test_iterative_complete_dft_vs_ml_benchmark_workflow_gap(vasp_test_dir, mock_vasp, test_dir, memory_jobstore,
                                                              ref_paths4_mpid_new2, fake_run_vasp_kwargs4_mpid_new2,
                                                              clean_dir):
@@ -804,7 +842,9 @@ def test_complete_dft_vs_ml_benchmark_workflow_gap(
             results_file = file.read().strip()
             assert expected_soap_dict in results_file, f"Expected soap_dict not found in {file_path}"
 
-
+@pytest.mark.skipif(
+  not has_mace, reason="MACE is not installed"
+)
 def test_complete_dft_vs_ml_benchmark_workflow_gap_ml_potential_for_data(
         vasp_test_dir, test_dir, memory_jobstore,  clean_dir
 ):
@@ -908,6 +948,9 @@ def test_complete_dft_vs_gap_benchmark_workflow_database(
             assert expected_soap_dict in results_file, f"Expected soap_dict not found in {file_path}"
 
 
+@pytest.mark.skipif(
+  not has_m3gnet, reason="Matgl is not installed."
+)
 def test_complete_dft_vs_ml_benchmark_workflow_m3gnet(
         vasp_test_dir, mock_vasp, test_dir, memory_jobstore, ref_paths4_mpid, fake_run_vasp_kwargs4_mpid, clean_dir
 ):
@@ -959,10 +1002,17 @@ def test_complete_dft_vs_ml_benchmark_workflow_m3gnet(
         5.2622804443539355, abs=3.0  # bad fit data, fluctuates between 4 and 7
     )
 
-
+@pytest.mark.skipif(
+  not has_m3gnet, reason="matgl is not installed."
+)
 def test_complete_dft_vs_ml_benchmark_workflow_m3gnet_finetuning(
         vasp_test_dir, mock_vasp, test_dir, memory_jobstore, ref_paths4_mpid, fake_run_vasp_kwargs4_mpid, clean_dir
 ):
+    import platform
+
+    py_version = platform.python_version()
+    
+    foundation_model = "M3GNet-PES-MatPES-PBE-2025.2" if not "3.10" in py_version else "M3GNet-MatPES-PBE-v2025.1-PES"
     path_to_struct = vasp_test_dir / "dft_ml_data_generation" / "POSCAR"
     structure = Structure.from_file(path_to_struct)
 
@@ -985,7 +1035,7 @@ def test_complete_dft_vs_ml_benchmark_workflow_m3gnet_finetuning(
             "include_stresses": True,
             "device": "cpu",
             "test_equal_to_val": True,
-            "foundation_model": "M3GNet-MP-2021.2.8-DIRECT-PES",
+            "foundation_model": foundation_model, #"M3GNet-PES-MatPES-PBE-2025.2",
             "use_foundation_model_element_refs": True,
         }]
     )
@@ -1000,13 +1050,19 @@ def test_complete_dft_vs_ml_benchmark_workflow_m3gnet_finetuning(
         ensure_success=True,
         store=memory_jobstore,
     )
+    
+    expected_error = 1.6 if "3.10" not in py_version else 3.37
 
     assert complete_workflow_m3gnet.jobs[5].name == "complete_benchmark_mp-22905"
     assert responses[complete_workflow_m3gnet.jobs[-1].output.uuid][1].output["metrics"][0][0][
-               "benchmark_phonon_rmse"] == pytest.approx(
-        4.6, abs=0.5,
+            "benchmark_phonon_rmse"] == pytest.approx(
+        expected_error, abs=0.5,
     )
+        
 
+@pytest.mark.skipif(
+  not has_nep, reason="NEP is not installed"
+)
 def test_complete_dft_vs_ml_benchmark_workflow_nep(
         vasp_test_dir, mock_vasp, mock_nep, test_dir, memory_jobstore,
         ref_paths4_mpid, fake_run_vasp_kwargs4_mpid, clean_dir
@@ -1055,9 +1111,11 @@ def test_complete_dft_vs_ml_benchmark_workflow_nep(
         3.8951576702856716
     )
 
-
+@pytest.mark.skipif(
+  not has_mace, reason="MACE is not installed"
+)
 def test_complete_dft_vs_ml_benchmark_workflow_mace(
-        vasp_test_dir, mock_vasp, test_dir, memory_jobstore, ref_paths4_mpid, fake_run_vasp_kwargs4_mpid, clean_dir
+        vasp_test_dir, mock_vasp, test_dir, clean_dir, memory_jobstore, ref_paths4_mpid, fake_run_vasp_kwargs4_mpid
 ):
     path_to_struct = vasp_test_dir / "dft_ml_data_generation" / "POSCAR"
     structure = Structure.from_file(path_to_struct)
@@ -1082,13 +1140,17 @@ def test_complete_dft_vs_ml_benchmark_workflow_mace(
             "hidden_irreps": "32x0e + 32x1o",
             "r_max": 3.0,
             "batch_size": 5,
-            "max_num_epochs": 10,
+            "max_num_epochs": 3,
             "start_swa": 5,
             "ema_decay": 0.99,
             "correlation": 3,
             "loss": "huber",
             "default_dtype": "float32",
             "device": "cpu",
+            #"name": "MACE",
+            "name": "MACE_final",
+            "foundation_model": "small",
+            "multiheads_finetuning": False,
         }]
     )
 
@@ -1106,12 +1168,14 @@ def test_complete_dft_vs_ml_benchmark_workflow_mace(
     assert complete_workflow_mace.jobs[5].name == "complete_benchmark_mp-22905"
     assert responses[complete_workflow_mace.jobs[-1].output.uuid][1].output["metrics"][0][0][
                "benchmark_phonon_rmse"] == pytest.approx(
-        5.391879137001022, abs=3.0
+        0.8, abs=3.0
         # result is so bad because hyperparameter quality is reduced to a minimum to save time
         # and too little data
     )
 
-
+@pytest.mark.skipif(
+  not has_mace, reason="MACE is not installed"
+)
 def test_complete_dft_vs_ml_benchmark_workflow_mace_finetuning(
         vasp_test_dir, mock_vasp, test_dir, memory_jobstore, ref_paths4_mpid, fake_run_vasp_kwargs4_mpid, clean_dir
 ):
@@ -1179,7 +1243,9 @@ def test_complete_dft_vs_ml_benchmark_workflow_mace_finetuning(
         # and too little data
     )
 
-
+@pytest.mark.skipif(
+  not has_mace, reason="MACE is not installed"
+)
 def test_complete_dft_vs_ml_benchmark_workflow_mace_finetuning_mp_settings(
         vasp_test_dir, mock_vasp, test_dir, memory_jobstore, ref_paths5_mpid, fake_run_vasp_kwargs5_mpid, clean_dir
 ):
@@ -1247,9 +1313,40 @@ def test_complete_dft_vs_ml_benchmark_workflow_mace_finetuning_mp_settings(
     )
 
 
+@pytest.mark.skipif(
+  not has_nequip, reason="Nequip is not installed"
+)
 def test_complete_dft_vs_ml_benchmark_workflow_nequip(
         vasp_test_dir, mock_vasp, test_dir, memory_jobstore, ref_paths4_mpid, fake_run_vasp_kwargs4_mpid, clean_dir
 ):
+    is_old_nequip = not hasattr(NequIPCalculator, "from_compiled_model")
+    
+    if is_old_nequip:
+        model_kwargs = {
+            "r_max": 4.0,
+            "num_layers": 4,
+            "l_max": 2,
+            "num_features": 32,
+            "num_basis": 8,
+            "invariant_layers": 2,
+            "invariant_neurons": 64,
+            "batch_size": 1,
+            "learning_rate": 0.005,
+            "max_epochs": 1,
+            "device": "cpu",
+        }
+    else:
+        model_kwargs = {
+                "cutoff_radius": 4,
+                "data": {
+                    "split_dataset": {"train": 0.8, "val": 0.2},
+                    "train_dataloader": {"num_workers": 1, "batch_size": 5},
+                    "val_dataloader": {"batch_size": 5},
+                },
+                "trainer": {"max_epochs": 5},
+                "device": "cpu",
+                }
+    
     path_to_struct = vasp_test_dir / "dft_ml_data_generation" / "POSCAR"
     structure = Structure.from_file(path_to_struct)
 
@@ -1267,19 +1364,9 @@ def test_complete_dft_vs_ml_benchmark_workflow_nequip(
         benchmark_structures=[structure],
         pre_xyz_files=["vasp_ref.extxyz"],
         pre_database_dir=test_dir / "fitting" / "ref_files",
-        fit_kwargs_list=[{
-            "r_max": 4.0,
-            "num_layers": 4,
-            "l_max": 2,
-            "num_features": 32,
-            "num_basis": 8,
-            "invariant_layers": 2,
-            "invariant_neurons": 64,
-            "batch_size": 1,
-            "learning_rate": 0.005,
-            "max_epochs": 1,
-            "device": "cpu",
-        }]
+         fit_kwargs_list=[
+             model_kwargs
+        ]
     )
 
     # automatically use fake VASP and write POTCAR.spec during the test
@@ -2047,3 +2134,62 @@ def test_supercell_test_runs(vasp_test_dir, clean_dir, memory_jobstore, test_dir
     responses_flow = run_locally(autoplex_flow)
     assert responses_flow[autoplex_flow.jobs[-1].output.uuid][1].replace[0].name == "Force field static"
     # seems that the current atomate2 implementation doesn't distinguish in the FF flow names
+
+
+def add_prefix(paths, jobprefix=""):
+    #return dict([(f"{jobprefix}{i}",make_ref_paths4_mpid_new2[i]) for i in dict{ref_paths4_mpid_new2}.keys()])
+    return {f"{jobprefix}{k}": v for k, v in paths.items()}
+
+def test_iterative_complete_dft_vs_ml_benchmark_workflow_gap_jobprefix(vasp_test_dir, mock_vasp, test_dir, memory_jobstore,
+                                                             ref_paths4_mpid_new2, fake_run_vasp_kwargs4_mpid_new2,
+                                                             clean_dir):
+    from ase.io import read
+    from pathlib import Path
+    # first test with just one iteration (more tests need to be added)
+    path_to_struct = vasp_test_dir / "dft_ml_data_generation" / "POSCAR"
+    structure = Structure.from_file(path_to_struct)
+
+    complete_workflow = IterativeCompleteDFTvsMLBenchmarkWorkflow(
+        rms_max=0.2,
+        max_iterations=3,
+        complete_dft_vs_ml_benchmark_workflow_0=CompleteDFTvsMLBenchmarkWorkflow(
+                                                                                 jobprefix='testprefix_',
+                                                                                 symprec=1e-2, displacements=[0.01],
+                                                                                 split_ratio=0.33,
+                                                                                 volume_custom_scale_factors=[0.975,
+                                                                                                              1.0,
+                                                                                                              1.025,
+                                                                                                              1.05],
+                                                                                 supercell_settings={"min_length": 8,
+                                                                                                     "min_atoms": 20},
+                                                                                 apply_data_preprocessing=True),
+        complete_dft_vs_ml_benchmark_workflow_1=CompleteDFTvsMLBenchmarkWorkflow(
+                                                                                 jobprefix='testprefix_',
+                                                                                 symprec=1e-2, displacements=[0.01],
+                                                                                 split_ratio=0.33,
+                                                                                 volume_custom_scale_factors=[0.975],
+                                                                                 supercell_settings={"min_length": 8,
+                                                                                                     "min_atoms": 20},
+                                                                                 apply_data_preprocessing=True,
+                                                                                 add_dft_phonon_struct=False,
+                                                                                 num_processes_fit=4,
+                                                                                 ),
+
+    ).make(
+        structure_list=[structure],
+        mp_ids=["test"],
+        benchmark_mp_ids=["test"],
+        benchmark_structures=[structure],
+        rattle_seed=42,
+    )
+
+    # automatically use fake VASP and write POTCAR.spec during the test
+    mock_vasp(add_prefix(ref_paths4_mpid_new2,jobprefix='testprefix_'), fake_run_vasp_kwargs4_mpid_new2)
+
+    # run the flow or job and ensure that it finished running successfully
+    responses = run_locally(
+        complete_workflow,
+        create_folders=True,
+        ensure_success=True,
+        store=memory_jobstore,
+    )

@@ -1,5 +1,118 @@
 # Changelog
 
+## v0.3.2
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### 🚀 New Features
+* Fixed fragment list error and added test by @HannaTuerk in https://github.com/autoatml/autoplex/pull/519
+* Add jobprefix to jf jobnames by @HannaTuerk in https://github.com/autoatml/autoplex/pull/533
+### 🐛 Bug Fixes
+* Pin scikit-build-core and update docs workflows > fix phonopy older build failures by @naik-aakash in https://github.com/autoatml/autoplex/pull/522
+* Fix mace rss keywords by @HannaTuerk in https://github.com/autoatml/autoplex/pull/531
+### 📚 Documentation
+* Update AIRSS installation instructions by @JaGeo in https://github.com/autoatml/autoplex/pull/511
+* Separate and dependencies | Added python 3.12 support | Update to CI and Docker by @JaGeo in https://github.com/autoatml/autoplex/pull/515
+* Fix CI failures | Documentation updates by @naik-aakash in https://github.com/autoatml/autoplex/pull/539
+### 🧹 House-Keeping
+* Update Dockerfile by @JaGeo in https://github.com/autoatml/autoplex/pull/506
+* Update airss installation to version 0.9.4 by @JaGeo in https://github.com/autoatml/autoplex/pull/507
+* Update Buildcell installation process in Dockerfile by @JaGeo in https://github.com/autoatml/autoplex/pull/509
+* Update Dockerfile by @JaGeo in https://github.com/autoatml/autoplex/pull/510
+* Downgrade airss to stabilize tests by @JaGeo in https://github.com/autoatml/autoplex/pull/512
+* Update Dockerfile by @JaGeo in https://github.com/autoatml/autoplex/pull/513
+* Next attempt to clean up ML interfaces by @JaGeo in https://github.com/autoatml/autoplex/pull/514
+* Modify installation in commit durations step of workflow by @naik-aakash in https://github.com/autoatml/autoplex/pull/525
+* Update commit durations step of CI workflow by @naik-aakash in https://github.com/autoatml/autoplex/pull/540
+
+## New Contributors
+* @HannaTuerk made their first contribution in https://github.com/autoatml/autoplex/pull/519
+
+**Full Changelog**: https://github.com/autoatml/autoplex/compare/v0.3.1...v0.3.2
+
+
+## v0.3.1
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### 🔄 Other Changes
+* Implement error handling for matgl model loading by @JaGeo in https://github.com/autoatml/autoplex/pull/503
+
+
+**Full Changelog**: https://github.com/autoatml/autoplex/compare/v0.3.0...v0.3.1
+
+
+## v0.3.0
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## Pacemaker Integration
+Pacemaker is now integrated into the Autoplex RSS (Random Structure Searching) workflow for fitting ML interatomic potentials. (implemented by @yuxzhou)
+
+## FHI-aims Integration
+In addition to VASP and CASTEP, the RSS workflow now supports DFT labelling with FHI-aims. (implemented by @ansobolev)
+
+## What's Changed
+### 🚀 New Features
+* Add support for FHI-aims by @ansobolev in https://github.com/autoatml/autoplex/pull/479
+* Feature/pacemaker implementation by @yuxzhou in https://github.com/autoatml/autoplex/pull/485
+### 🐛 Bug Fixes
+* Fix test_ratio = 0 case by @ansobolev in https://github.com/autoatml/autoplex/pull/478
+* Resolve MACE bug by @JaGeo in https://github.com/autoatml/autoplex/pull/483
+### 🧹 House-Keeping
+* fix uv install command by @naik-aakash in https://github.com/autoatml/autoplex/pull/461
+* Add mamba cache cleanup step by @naik-aakash in https://github.com/autoatml/autoplex/pull/464
+* Housekeeping by @JaGeo in https://github.com/autoatml/autoplex/pull/490
+* Add .gitattributes to mark tests as vendored by @naik-aakash in https://github.com/autoatml/autoplex/pull/491
+* Merge test durations by @naik-aakash in https://github.com/autoatml/autoplex/pull/493
+* remove duplicate run triggers of test workflows by @naik-aakash in https://github.com/autoatml/autoplex/pull/494
+* include pacemaker test-durations and coverage  by @naik-aakash in https://github.com/autoatml/autoplex/pull/495
+### 🔄 Other Changes
+* Revise changelog for v0.2.0 release by @JaGeo in https://github.com/autoatml/autoplex/pull/460
+* Add f90wrap dependency to pyproject.toml by @JaGeo in https://github.com/autoatml/autoplex/pull/468
+* Aims docs by @ansobolev in https://github.com/autoatml/autoplex/pull/487
+* Add downloads badge to README by @JaGeo in https://github.com/autoatml/autoplex/pull/488
+* A PR to request developer access by @yuxzhou in https://github.com/autoatml/autoplex/pull/489
+
+## New Contributors
+* @ansobolev made their first contribution in https://github.com/autoatml/autoplex/pull/478
+* @yuxzhou made their first contribution in https://github.com/autoatml/autoplex/pull/489
+
+**Full Changelog**: https://github.com/autoatml/autoplex/compare/v0.2.0...v0.3.0
+
+
+## v0.2.0
+
+Previously, **autoplex** supported DFT labelling of structures primarily via **VASP**.
+
+In this release, we introduce a new **CASTEP interface**, developed based on the [`ase.calculators.castep`](https://ase-lib.org/ase/calculators/castep.html) module.
+This addition enables CASTEP to be used directly within the **autoplex** workflow, laying the groundwork for high-throughput DFT workflows, such as **Random Structure Searching (RSS)**.
+
+## What's Changed
+### 🚀 New Features
+- **CASTEP Makers** with the workflow integration in [https://github.com/autoatml/autoplex/pull/436](https://github.com/autoatml/autoplex/pull/436)
+  Developed by @YuanbinLiu, @YutaOkkotsu16, and @JaGeo. Further contributions (documentation and review) by @nfragapane and @naik-aakash
+
+### 🔄 Other Changes
+- Generalized data creation for the **RSS workflow**, improving flexibility and automation.
+  Contributed by @JaGeo, @naik-aakash, and @YuanbinLiu.
+- Updated `index.rst` and added **CASTEP documentation** for better coverage and clarity by @JaGeo.
+- Upgraded **MACE** version to enhance compatibility and ensure model consistency by @naik-aakash.
+- Updated **pre-commit hooks** to maintain consistent code formatting and improve CI stability by @naik-aakash.
+- Expanded and refined **README** documentation and miscellaneous module descriptions by @JaGeo.
+
+### 🐛 Bug fixes
+- Resolved several **RSS-related issues**, improving overall workflow robustness.
+  @YuanbinLiu
+
+### Contributors
+@YuanbinLiu @JaGeo @naik-aakash @nfragapane  @YutaOkkotsu16
+
+**Full Changelog**: https://github.com/autoatml/autoplex/compare/v0.1.4...v0.2.0
+
+
 ## v0.1.4
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
@@ -52,6 +165,7 @@
 * small docs extension by @QuantumChemist in https://github.com/autoatml/autoplex/pull/332
 ### 🧹 House-Keeping
 * Update dependencies & CI publish workflow by @naik-aakash in https://github.com/autoatml/autoplex/pull/334
+
 
 
 **Full Changelog**: https://github.com/autoatml/autoplex/compare/v0.1.1...v0.1.2

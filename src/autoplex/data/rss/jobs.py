@@ -180,6 +180,8 @@ class RandomizedStructure(Maker):
                         self.fragment.arrays["fragment_id"] = [
                             f"{1}-f" for i in self.fragment
                         ]
+                    symbols = [self.fragment.get_chemical_symbols()]
+                    self.fragment = [self.fragment]
 
                 elif isinstance(self.fragment, list):
                     if self.fragment_numbers is None:
@@ -188,29 +190,25 @@ class RandomizedStructure(Maker):
                         ]
                     else:
                         fragment_numbers = self.fragment_numbers
-                    write_fragment = self.fragment[0]
-                    for frag in self.fragment[
-                        1:
-                    ]:  # merge all separate fragments into one Atoms object
-                        write_fragment += frag
+                    symbols = [i.get_chemical_symbols() for i in self.fragment]
 
                 fragment_parameters = [
                     "%BLOCK POSITIONS_ABS",
                 ]
-                symbols = self.fragment.get_chemical_symbols()
-                for i, val in enumerate(self.fragment.get_positions(wrap=True)):
-                    if i == 0:
-                        newline = (
-                            f"{symbols[i]} {val[0]:.8f} {val[1]:.8f} {val[2]:.8f}"
-                            f" # {self.fragment.arrays['fragment_id'][i]}"
-                            f" % NUM={fragment_numbers[i]}"
-                        )
-                    else:
-                        newline = (
-                            f"{symbols[i]} {val[0]:.8f} {val[1]:.8f} {val[2]:.8f}"
-                            f" # {self.fragment.arrays['fragment_id'][i]}"
-                        )
-                    fragment_parameters.append(newline)
+                for ifrag, frag in enumerate(self.fragment):
+                    for i, val in enumerate(frag.get_positions(wrap=True)):
+                        if i == 0:
+                            newline = (
+                                f"{symbols[ifrag][i]} {val[0]:.8f} {val[1]:.8f} {val[2]:.8f}"
+                                f" # frag-{ifrag}"
+                                f" % NUM={fragment_numbers[ifrag]}"
+                            )
+                        else:
+                            newline = (
+                                f"{symbols[ifrag][i]} {val[0]:.8f} {val[1]:.8f} {val[2]:.8f}"
+                                f" # frag-{ifrag}"  # atoms with same # frag-tag stay together during rss
+                            )
+                        fragment_parameters.append(newline)
                 fragment_parameters.append("%ENDBLOCK POSITIONS_ABS")
 
                 buildcell_parameters = (
@@ -424,7 +422,7 @@ class RandomizedStructure(Maker):
 
 @job
 def do_rss_single_node(
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"],
+    mlip_type: Literal["GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"],
     mlip_path: str | Path,
     iteration_index: str,
     structures: list[Structure],
@@ -451,7 +449,7 @@ def do_rss_single_node(
 
     Parameters
     ----------
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
+    mlip_type: Literal["GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
         Choose one specific MLIP type to be fitted.
     mlip_path: str | Path
         Path to the MLIP model.
@@ -527,7 +525,7 @@ def do_rss_single_node(
 
 @job
 def do_rss_multi_node(
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"],
+    mlip_type: Literal["GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"],
     mlip_path: str | Path,
     iteration_index: str,
     structure: list[Structure] | list[list[Structure]] | None = None,
@@ -549,13 +547,14 @@ def do_rss_multi_node(
     num_groups: int = 1,
     config_type: str = "traj",
     keep_symmetry: bool = True,
+    jobprefix: str = "",
 ) -> list[list | None]:
     """
     Perform sandom structure searching (RSS) on multiple nodes using a machine learning interatomic potential (MLIP).
 
     Parameters
     ----------
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
+    mlip_type: Literal["GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
         Choose one specific MLIP type to be fitted.
     mlip_path: str | Path
         Path to the MLIP model.
@@ -601,6 +600,8 @@ def do_rss_multi_node(
         Specify the type of configurations generated from RSS
     keep_symmetry: bool
         If true, preserve symmetry during relaxation.
+    jobprefix: str
+        Prefix that precedes the jobname.
 
     Returns
     -------
@@ -652,7 +653,7 @@ def do_rss_multi_node(
             config_type=config_type,
             keep_symmetry=keep_symmetry,
         )
-
+        rss.name = f"{jobprefix}{rss.name}"
         struct_start_index += len(structure_groups[i])
 
         job_list.append(rss)

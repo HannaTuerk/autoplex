@@ -65,6 +65,8 @@ class TightDFTStaticMaker(PhononDisplacementMaker):
         the "." character which is typically used to denote file extensions. To avoid
         this, use the ":" character, which will automatically be converted to ".". E.g.
         ``{"my_file:txt": "contents of the file"}``.
+    jobprefix: str
+        Prefix that precedes the jobname.
     """
 
     name: str = "dft static"
@@ -98,6 +100,7 @@ class TightDFTStaticMaker(PhononDisplacementMaker):
             auto_ispin=False,
         )
     )
+    jobprefix: str = ""
 
 
 @dataclass
@@ -179,6 +182,8 @@ class DFTPhononMaker(PhononMaker):
         in the future
     store_force_constants: bool
         If True, force constants will be stored
+    jobprefix: str
+        Prefix that precedes the jobname.
     """
 
     name: str = "dft phonon"
@@ -228,6 +233,7 @@ class DFTPhononMaker(PhononMaker):
     phonon_displacement_maker: BaseVaspMaker | None = field(
         default_factory=TightDFTStaticMaker
     )
+    jobprefix: str = ""
 
 
 @dataclass
@@ -287,6 +293,8 @@ class RandomStructuresDataGenerator(Maker):
         Default=10.
     supercell_settings: dict
         Settings for supercells.
+    jobprefix: str
+        Prefix that precedes the jobname.
     """
 
     name: str = "RandomStruturesDataGeneratorForML"
@@ -330,6 +338,10 @@ class RandomStructuresDataGenerator(Maker):
     supercell_settings: dict | None = field(
         default_factory=lambda: {"min_length": 15, "max_length": 20}
     )
+    jobprefix: str = ""
+
+    def __post_init__(self):  # noqa: D105
+        self.name = f"{self.jobprefix} RandomStruturesDataGeneratorForML"
 
     def make(
         self,
@@ -646,13 +658,16 @@ class MLPhononMaker(FFPhononMaker):
                 static_maker_kwargs=self.static_maker_kwargs,
             )
         elif ml_model == "NEQUIP":
+            model_key = (
+                "compile_path" if str(potential_file).endswith(".pt2") else "model_path"
+            )
             if calculator_kwargs is None:
                 calculator_kwargs = {
-                    "model_path": str(potential_file),
+                    model_key: str(potential_file),
                     "device": "cuda",
                 }
             else:
-                calculator_kwargs.update({"model_path": str(potential_file)})
+                calculator_kwargs.update({model_key: str(potential_file)})
 
             ml_prep = ml_phonon_maker_preparation(
                 bulk_relax_maker=ForceFieldRelaxMaker(

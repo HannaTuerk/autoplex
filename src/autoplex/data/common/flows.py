@@ -42,11 +42,12 @@ from autoplex.data.common.utils import (
 )
 from autoplex.misc.castep.jobs import BaseCastepMaker
 
-__all__ = [
-    "DFTStaticLabelling",
-    "GenerateTrainingDataForTesting",
-    "RattledTrainingDataMaker",
-]
+try:
+    from atomate2.aims.jobs.base import BaseAimsMaker
+except ImportError:
+    BaseAimsMaker = None
+
+__all__ = ["DFTStaticLabelling", "GenerateTrainingDataForTesting"]
 
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -588,12 +589,18 @@ class GenerateTrainingDataForTesting(Maker):
         Maker for the relax jobs.
     static_energy_maker: ForceFieldStaticMaker | ForceFieldRelaxMaker | None
         Maker for the static jobs.
+    jobprefix: str
+        Prefix that precedes the jobname.
 
     """
 
     name: str = "generate_training_data_for_testing"
     bulk_relax_maker: ForceFieldRelaxMaker | None = None
     static_energy_maker: ForceFieldStaticMaker | ForceFieldRelaxMaker | None = None
+    jobprefix: str = ""
+
+    def __post_init__(self):  # noqa: D105
+        self.name = f"{self.jobprefix}{self.name}"
 
     def make(
         self,
@@ -694,7 +701,7 @@ class GenerateTrainingDataForTesting(Maker):
                 )
                 jobs.append(plots)
 
-        return Flow(jobs=jobs, name=self.name)  # , plots.output)
+        return Flow(jobs=jobs, name=f"{self.jobprefix}{self.name}")  # , plots.output)
 
     @job
     def static_run_and_convert(
@@ -758,3 +765,274 @@ class GenerateTrainingDataForTesting(Maker):
             jobs.append(conv_job)
 
         return Response(replace=Flow(jobs), output=conv_job.output)
+
+
+@dataclass
+class DFTStaticLabelling(Maker):
+    """
+    Maker to set up and run VASP static calculations for input structures, including bulk, isolated atoms, and dimers.
+
+    It supports custom VASP input parameters and error handlers.
+
+    Parameters
+    ----------
+    name: str
+        Name of the flow.
+    isolated_atom: bool
+        If true, perform single-point calculations for isolated atoms. Default is False.
+    isolated_species: list[str] | None
+        List of species for which to perform isolated atom calculations. If None,
+        species will be automatically derived from the 'structures' list. Default is None.
+    e0_spin: bool
+        If true, include spin polarization in isolated atom and dimer calculations.
+        Default is False.
+    isolatedatom_box: list[float]
+        List of the lattice constants for a isolated_atom configuration.
+    dimer: bool
+        If true, perform single-point calculations for dimers. Default is False.
+    dimer_box: list[float]
+        The lattice constants of a dimer box.
+    dimer_species: list[str] | None
+        List of species for which to perform dimer calculations. If None, species
+        will be derived from the 'structures' list. Default is None.
+    dimer_range: list[float] | None
+        Range of distances for dimer calculations.
+    dimer_num: int
+        Number of different distances to consider for dimer calculations.
+    custom_incar: dict | None
+        Dictionary of custom VASP input parameters. If provided, will update the
+        default parameters. Default is None.
+    custom_potcar: dict | None
+        Dictionary of POTCAR settings to update. Keys are element symbols, values are the desired POTCAR labels.
+        Default is None.
+    static_energy_maker: BaseVaspMaker | CastepStaticMaker | ForceFieldStaticMaker
+        Maker for static energy jobs: either BaseVaspMaker (VASP-based) or CastepStaticMaker (CASTEP-based) or
+        ForceFieldStaticMaker (force field-based). Defaults to StaticMaker (VASP-based).
+    static_energy_maker_isolated_atoms: BaseVaspMaker | ForceFieldStaticMaker | None
+        Maker for static energy jobs of isolated atoms: either BaseVaspMaker (VASP-based) or
+        ForceFieldStaticMaker (force field-based) or None. If set to `None`, the parameters
+        from `static_energy_maker` will be used as the default for isolated atoms. In this case,
+        if `static_energy_maker` is a `StaticMaker`, all major settings will be inherited,
+        except that `kspacing` will be automatically set to 100 to enforce a Gamma-point-only calculation.
+        This is typically suitable for single-atom systems. Default is None. If a non-`StaticMaker` maker
+        is used here, its output must include a `dir_name` field to ensure compatibility with downstream workflows.
+    jobprefix: str
+        Prefix that precedes the jobname.
+
+    Returns
+    -------
+    dict
+        A dictionary containing:
+        - 'dirs_of_dft': List of directories containing DFT data.
+        - 'config_type': List of configuration types corresponding to each directory.
+    """
+
+    name: str = "do_dft_labelling"
+    isolated_atom: bool = False
+    isolated_species: list[str] | None = None
+    e0_spin: bool = False
+    isolatedatom_box: list[float] = field(default_factory=lambda: [20, 20, 20])
+    dimer: bool = False
+    dimer_box: list[float] = field(default_factory=lambda: [20, 20, 20])
+    dimer_species: list[str] | None = None
+    dimer_range: list[float] | None = None
+    dimer_num: int = 21
+    custom_incar: dict | None = None
+    custom_potcar: dict | None = None
+    static_energy_maker: (
+        BaseVaspMaker | BaseCastepMaker | ForceFieldStaticMaker | BaseAimsMaker
+    ) = field(
+        default_factory=lambda: StaticMaker(
+            input_set_generator=StaticSetGenerator(
+                user_incar_settings={
+                    "ADDGRID": "True",
+                    "ENCUT": 520,
+                    "EDIFF": 1e-06,
+                    "ISMEAR": 0,
+                    "SIGMA": 0.01,
+                    "PREC": "Accurate",
+                    "ISYM": None,
+                    "KSPACING": 0.2,
+                    "NPAR": 8,
+                    "LWAVE": "False",
+                    "LCHARG": "False",
+                    "ENAUG": None,
+                    "GGA": None,
+                    "ISPIN": None,
+                    "LAECHG": None,
+                    "LELF": None,
+                    "LORBIT": None,
+                    "LVTOT": None,
+                    "NSW": None,
+                    "SYMPREC": None,
+                    "NELM": 100,
+                    "LMAXMIX": None,
+                    "LASPH": None,
+                    "AMIN": None,
+                }
+            ),
+            run_vasp_kwargs={"handlers": ()},
+        )
+    )
+    static_energy_maker_isolated_atoms: (
+        BaseVaspMaker | BaseCastepMaker | ForceFieldStaticMaker | None
+    ) = None
+    jobprefix: str = ""
+
+    def __post_init__(self):  # noqa: D105
+        self.name = f"{self.jobprefix}{self.name}"
+
+    @job
+    def make(
+        self,
+        structures: list,
+        config_type: str | None = None,
+    ):
+        """
+        Maker to set up and run VASP static calculations.
+
+        Parameters
+        ----------
+        structures : list[Structure] | list[list[Structure]]
+            List of structures for which to run the VASP static calculations. If None,
+            no bulk calculations will be performed. Default is None.
+        config_type : str
+            Configuration types corresponding to the structures. If None, defaults
+            to 'bulk'. Default is None.
+        """
+        job_list = []
+
+        if isinstance(structures[0], list):
+            structures = flatten(structures, recursive=False)
+
+        dirs: dict[str, list[str]] = {"dirs_of_dft": [], "config_type": []}
+
+        if isinstance(self.static_energy_maker, StaticMaker):
+
+            if self.custom_incar is not None:
+                self.static_energy_maker.input_set_generator.user_incar_settings.update(
+                    self.custom_incar
+                )
+
+            if self.custom_potcar is not None:
+                self.static_energy_maker.input_set_generator.user_potcar_settings.update(
+                    self.custom_potcar
+                )
+
+        st_m = self.static_energy_maker
+
+        if structures:
+            for idx, struct in enumerate(structures):
+                static_job = st_m.make(structure=struct)
+                static_job.name = f"{self.jobprefix}static_bulk_{idx}"
+                dirs["dirs_of_dft"].append(static_job.output.dir_name)
+                if config_type:
+                    dirs["config_type"].append(config_type)
+                else:
+                    dirs["config_type"].append("bulk")
+                job_list.append(static_job)
+
+        if self.isolated_atom:
+            try:
+                if self.isolated_species is not None:
+                    syms = self.isolated_species
+
+                elif (self.isolated_species is None) and (structures is not None):
+                    # Get the species from the database
+                    atoms = [AseAtomsAdaptor().get_atoms(at) for at in structures]
+                    syms = ElementCollection(atoms).get_species()
+
+                for idx, sym in enumerate(syms):
+                    lattice = Lattice.orthorhombic(
+                        self.isolatedatom_box[0],
+                        self.isolatedatom_box[1],
+                        self.isolatedatom_box[2],
+                    )
+                    isolated_atom_struct = Structure(lattice, [sym], [[0.0, 0.0, 0.0]])
+
+                    if self.static_energy_maker_isolated_atoms is None:
+                        static_job = st_m.make(structure=isolated_atom_struct)
+                        if isinstance(self.static_energy_maker, StaticMaker):
+                            static_job = update_user_incar_settings(
+                                static_job,
+                                {"KSPACING": 100.0, "KPAR": 1},
+                            )
+
+                            if self.e0_spin:
+                                static_job = update_user_incar_settings(
+                                    static_job, {"ISPIN": 2}
+                                )
+                    else:
+                        static_job = self.static_energy_maker_isolated_atoms.make(
+                            structure=isolated_atom_struct
+                        )
+
+                    static_job.name = f"{self.jobprefix}static_isolated_{idx}"
+                    dirs["dirs_of_dft"].append(static_job.output.dir_name)
+                    dirs["config_type"].append("IsolatedAtom")
+                    job_list.append(static_job)
+
+            except ValueError as e:
+                logging.error(f"Unknown species of isolated atoms! Exception: {e}")
+                traceback.print_exc()
+
+        if self.dimer:
+            try:
+                atoms = [AseAtomsAdaptor().get_atoms(at) for at in structures]
+                if self.dimer_species is not None:
+                    dimer_syms = self.dimer_species
+                elif (self.dimer_species is None) and (structures is not None):
+                    # Get the species from the database
+                    dimer_syms = ElementCollection(atoms).get_species()
+                pairs_list = ElementCollection(atoms).find_element_pairs(dimer_syms)
+                for pair in pairs_list:
+                    for dimer_i in range(self.dimer_num):
+                        if self.dimer_range is not None:
+                            dimer_distance = self.dimer_range[0] + (
+                                self.dimer_range[1] - self.dimer_range[0]
+                            ) * float(dimer_i) / float(
+                                self.dimer_num - 1 + 0.000000000001
+                            )
+
+                        lattice = Lattice.orthorhombic(
+                            self.dimer_box[0],
+                            self.dimer_box[1],
+                            self.dimer_box[2],
+                        )
+                        dimer_struct = Structure(
+                            lattice,
+                            [pair[0], pair[1]],
+                            [[0.0, 0.0, 0.0], [dimer_distance, 0.0, 0.0]],
+                            coords_are_cartesian=True,
+                        )
+
+                        static_energy_maker_dimer = (
+                            self.static_energy_maker_isolated_atoms
+                        )
+                        if static_energy_maker_dimer is None:
+                            static_job = st_m.make(structure=dimer_struct)
+                            if isinstance(self.static_energy_maker, StaticMaker):
+                                static_job = update_user_incar_settings(
+                                    static_job,
+                                    {"KSPACING": 100.0, "KPAR": 1},
+                                )
+
+                                if self.e0_spin:
+                                    static_job = update_user_incar_settings(
+                                        static_job, {"ISPIN": 2}
+                                    )
+                        else:
+                            static_job = static_energy_maker_dimer.make(
+                                structure=dimer_struct
+                            )
+
+                        static_job.name = f"{self.jobprefix}static_dimer_{dimer_i}"
+                        dirs["dirs_of_dft"].append(static_job.output.dir_name)
+                        dirs["config_type"].append("dimer")
+                        job_list.append(static_job)
+
+            except ValueError:
+                logging.error("Unknown atom types in dimers!")
+                traceback.print_exc()
+
+        return Response(replace=Flow(job_list), output=dirs)

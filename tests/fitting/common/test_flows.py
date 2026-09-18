@@ -1,5 +1,47 @@
+import sys
 import pytest
 from autoplex.fitting.common.flows import MLIPFitMaker
+import subprocess
+try:
+    #from dgl.data.utils import split_dataset
+    from matgl.models import M3GNet
+    has_m3gnet=True
+except:
+    has_m3gnet = False
+
+try:
+    import mace
+    has_mace=True
+except:
+    has_mace=False
+
+
+try: 
+    from calorine.nep import read_loss, write_nepfile, write_structures
+    has_nep=True
+except:
+    has_nep=False
+
+try:
+    from pyace.asecalc import PyACECalculator
+
+    has_ypace = True
+except ImportError:
+    PyACECalculator = object
+    has_ypace = False
+
+if sys.version_info[:2] == (3, 10):
+    try:
+        from nequip.ase import NequIPCalculator
+        has_nequip=True
+    except:
+        has_nequip=False
+else:
+    try:
+        from nequip.integrations.ase import NequIPCalculator
+        has_nequip=True
+    except:
+        has_nequip=False
 
 
 @pytest.fixture(scope="class")
@@ -216,7 +258,19 @@ def test_mlip_fit_maker_with_pre_database_dir(
     test_atoms = read(Path(gapfit.output["mlip_path"][0].resolve(memory_jobstore))/ "quip_test.extxyz",':')
     assert (len(train_atoms_before) +len(test_atoms_before)+7) == (len(train_atoms) +len(test_atoms))
 
-
+@pytest.mark.skipif(
+  not (
+        subprocess.run(
+            'julia -e "using Pkg; println(haskey(Pkg.dependencies(), '
+            'Base.UUID(\\"3b96b61c-0fcc-4693-95ed-1ef9f35fcc53\\")))"',
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+    )
+    == "true",reason="J-ACE is not installed."
+)
 def test_mlip_fit_maker_jace(
         test_dir, memory_jobstore, vasp_test_dir, fit_input_dict, clean_dir
 ):
@@ -248,6 +302,9 @@ def test_mlip_fit_maker_jace(
     # check if julia-ACE potential file is generated
     assert Path(jacefit.output["mlip_path"][0].resolve(memory_jobstore)).exists()
 
+@pytest.mark.skipif(
+  not has_nep, reason="NEP is not installed"
+)
 def test_mlip_fit_maker_nep(
         test_dir, memory_jobstore, vasp_test_dir, fit_input_dict, mock_nep, clean_dir
 ):
@@ -256,7 +313,7 @@ def test_mlip_fit_maker_nep(
 
     test_files_dir = Path(test_dir / "fitting").resolve()
 
-    # Test NEQUIP fit runs with pre_database_dir
+    # Test NEP fit runs with pre_database_dir
     nepfit = MLIPFitMaker(
         mlip_type="NEP",
         pre_database_dir=str(test_files_dir),
@@ -285,6 +342,9 @@ def test_mlip_fit_maker_nep(
     assert nepfit.output["train_error"].resolve(memory_jobstore) == pytest.approx(0.00191)
     assert nepfit.output["convergence"].resolve(memory_jobstore)
 
+@pytest.mark.skipif(
+  not has_nequip, reason="NEQUIP is not installed"
+)
 def test_mlip_fit_maker_nequip(
         test_dir, memory_jobstore, vasp_test_dir, fit_input_dict, clean_dir
 ):
@@ -292,6 +352,26 @@ def test_mlip_fit_maker_nequip(
     from jobflow import run_locally
 
     test_files_dir = Path(test_dir / "fitting").resolve()
+    
+    is_old_nequip = not hasattr(NequIPCalculator, "from_compiled_model")
+    
+    if is_old_nequip:
+        model_kwargs = {
+            "r_max":3.14,
+            "max_epochs":10,
+            "device": "cpu",
+        }
+    else:
+        model_kwargs = {
+            "device": "cpu",
+            "cutoff_radius": 3.14,
+            "data": {
+                "split_dataset": {"train": 0.8, "val": 0.2},
+                "train_dataloader": {"num_workers": 1, "batch_size": 1},
+                "val_dataloader": {"batch_size": 5},
+            },
+            "trainer": {"max_epochs": 10}
+        }
 
     # Test NEQUIP fit runs with pre_database_dir
     nequipfit = MLIPFitMaker(
@@ -303,9 +383,7 @@ def test_mlip_fit_maker_nequip(
     ).make(
         fit_input=fit_input_dict,
         isolated_atom_energies={3: -0.28649227, 17: -0.25638457},
-        r_max=3.14,
-        max_epochs=10,
-        device="cpu",
+        **model_kwargs
     )
 
     run_locally(
@@ -315,7 +393,9 @@ def test_mlip_fit_maker_nequip(
     # check if NEQUIP potential file is generated
     assert Path(nequipfit.output["mlip_path"][0].resolve(memory_jobstore)).exists()
 
-
+@pytest.mark.skipif(
+  not has_m3gnet, reason="matgl is not installed"
+)
 def test_mlip_fit_maker_m3gnet(
         test_dir, memory_jobstore, vasp_test_dir, fit_input_dict, clean_dir
 ):
@@ -355,7 +435,9 @@ def test_mlip_fit_maker_m3gnet(
     # check if M3GNET potential file is generated
     assert Path(m3gnetfit.output["mlip_path"][0].resolve(memory_jobstore)).exists()
 
-
+@pytest.mark.skipif(
+  not has_mace, reason="MACE is not installed"
+)
 def test_mlip_fit_maker_mace(
         test_dir, memory_jobstore, vasp_test_dir, fit_input_dict, clean_dir
 ):
@@ -393,6 +475,55 @@ def test_mlip_fit_maker_mace(
 
     # check if MACE potential file is generated
     assert Path(macefit.output["mlip_path"][0].resolve(memory_jobstore)).exists()
+
+@pytest.mark.skipif(
+  not has_ypace, reason="Pacemaker is not installed."
+)
+def test_mlip_fit_maker_pace(
+        test_dir, memory_jobstore, vasp_test_dir, fit_input_dict, clean_dir
+):
+    from pathlib import Path
+    from jobflow import run_locally
+
+    test_files_dir = Path(test_dir / "fitting").resolve()
+
+    # Test P-ACE fit runs with pre_database_dir (mimicking real flow with preprocessing)
+    pacefit = MLIPFitMaker(
+        mlip_type="P-ACE",
+        pre_database_dir=str(test_files_dir),
+        pre_xyz_files=["pre_xyz_train.extxyz", "pre_xyz_test.extxyz"],
+        apply_data_preprocessing=True,
+        num_processes_fit=4,
+    ).make(
+        fit_input=fit_input_dict,
+        species_list=["Li", "Cl"],
+        # Provide isolated atom energies since preprocessing is mocked or needs help
+        isolated_atom_energies={3: -0.28649227, 17: -0.25638457},
+        
+        # Override backend batch size for small test dataset
+        backend={
+            "evaluator": "tensorpot", 
+            "batch_size_training": 5,
+            "batch_size_evaluation": 5
+        }
+    )
+
+    run_locally(
+        pacefit, ensure_success=True, create_folders=True, store=memory_jobstore
+    )
+
+    # check if P-ACE potential file is generated
+    # This also implicitly checks that converting .xyz -> .pckl.gzip worked
+    assert Path(pacefit.output["mlip_path"][0].resolve(memory_jobstore)).exists()
+    
+    # check if model outputs are as expected
+    test_error = pacefit.output["test_error"].resolve(memory_jobstore)
+    train_error = pacefit.output["train_error"].resolve(memory_jobstore)
+    
+    assert isinstance(test_error, float)
+    assert isinstance(train_error, float)
+    assert test_error < 0.05 
+    assert train_error < 0.01 
 
 
 def test_mlip_fit_maker_glue_xml(

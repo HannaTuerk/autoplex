@@ -42,7 +42,7 @@ class MLIPFitMaker(Maker):
     ----------
     name : str
         Name of the flows produced by this maker.
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
+    mlip_type: Literal["GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
         Choose one specific MLIP type to be fitted.
     hyperpara_opt: bool
         Perform hyperparameter optimization using XPOT
@@ -53,6 +53,8 @@ class MLIPFitMaker(Maker):
         Reference force name.
     ref_virial_name : str
         Reference virial name.
+    ref_stress_name : str
+        Reference stress name.
     glue_file_path: str
         Name of the glue.xml file path.
     split_ratio: float
@@ -86,14 +88,21 @@ class MLIPFitMaker(Maker):
         Determine whether to preprocess the data.
     run_fits_on_different_cluster: bool
         If true, run fits on different clusters.
+    disable_testing: bool
+        Whether to disable running the model on test data.
+    jobprefix: str
+        The prefix that precedes the jobname displayed.
     """
 
     name: str = "MLpotentialFit"
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"] = "GAP"
+    mlip_type: Literal["GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"] = (
+        "GAP"
+    )
     hyperpara_opt: bool = False
     ref_energy_name: str = "REF_energy"
     ref_force_name: str = "REF_forces"
     ref_virial_name: str = "REF_virial"
+    ref_stress_name: str = "REF_stress"
     glue_file_path: str = "glue.xml"
     split_ratio: float = 0.4
     force_max: float = 40.0
@@ -110,6 +119,11 @@ class MLIPFitMaker(Maker):
     num_processes_fit: int | None = None
     apply_data_preprocessing: bool = True
     run_fits_on_different_cluster: bool = False
+    disable_testing: bool = False
+    jobprefix: str = ""
+
+    def __post_init__(self):  # noqa: D105
+        self.name = f"{self.jobprefix}MLpotentialFit"
 
     def make(
         self,
@@ -143,10 +157,19 @@ class MLIPFitMaker(Maker):
         fit_kwargs: dict
             Additional keyword arguments for MLIP fitting.
         """
-        if self.mlip_type not in ["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]:
+        if self.mlip_type not in [
+            "GAP",
+            "J-ACE",
+            "P-ACE",
+            "NEP",
+            "NEQUIP",
+            "M3GNET",
+            "MACE",
+        ]:
             raise ValueError(
                 "Please correct the MLIP name!"
-                "The current version ONLY supports the following models: GAP, J-ACE, NEP, NEQUIP, M3GNET, and MACE."
+                "The current version ONLY supports the following models: "
+                "GAP, J-ACE, P-ACE, NEP, NEQUIP, M3GNET, and MACE."
             )
 
         if self.apply_data_preprocessing:
@@ -163,6 +186,7 @@ class MLIPFitMaker(Maker):
                 ref_virial_name=self.ref_virial_name,
                 ref_force_name=self.ref_force_name,
                 ref_energy_name=self.ref_energy_name,
+                ref_stress_name=self.ref_stress_name,
                 atomwise_regularization_parameter=self.atomwise_regularization_parameter,
                 atom_wise_regularization=self.atom_wise_regularization,
                 run_fits_on_different_cluster=self.run_fits_on_different_cluster,
@@ -184,12 +208,15 @@ class MLIPFitMaker(Maker):
                 hyperparameters=hyperparameters,
                 ref_energy_name=self.ref_energy_name,
                 ref_force_name=self.ref_force_name,
+                ref_stress_name=self.ref_stress_name,
                 ref_virial_name=self.ref_virial_name,
                 device=device,
                 species_list=species_list,
                 database_dict=data_prep_job.output["database_dict"],
+                disable_testing=self.disable_testing,
                 **fit_kwargs,
             )
+            mlip_fit_job.name = f"{self.jobprefix}{mlip_fit_job.name}"
             jobs.append(mlip_fit_job)
             output = {
                 "mlip_path": mlip_fit_job.output["mlip_path"],
@@ -221,8 +248,10 @@ class MLIPFitMaker(Maker):
             ref_virial_name=self.ref_virial_name,
             device=device,
             species_list=species_list,
+            disable_testing=self.disable_testing,
             **fit_kwargs,
         )
+        mlip_fit_job.name = f"{self.jobprefix}{mlip_fit_job.name}"
 
         output = {
             "mlip_path": mlip_fit_job.output["mlip_path"],
@@ -259,6 +288,8 @@ class DataPreprocessing(Maker):
         Reference force name in xyz file.
     ref_virial_name : str
         Reference virial name in xyz file.
+    ref_stress_name : str
+        Reference stress name in xyz file.
     force_max: float
         Maximally allowed force in the data set.
     force_min: float
@@ -277,6 +308,8 @@ class DataPreprocessing(Maker):
         Name of the test xyz data file.
     run_fits_on_different_cluster: bool
         If True, will copy the fitting database to the MongoDB
+    jobprefix: str
+        The prefix that precedes the jobname.
 
     """
 
@@ -288,6 +321,7 @@ class DataPreprocessing(Maker):
     ref_energy_name: str = "REF_energy"
     ref_force_name: str = "REF_forces"
     ref_virial_name: str = "REF_virial"
+    ref_stress_name: str = "REF_stress"
     force_max: float = 40.0
     force_min: float = 0.01  # unit: eV Å-1
     pre_database_dir: str | None = None
@@ -297,6 +331,10 @@ class DataPreprocessing(Maker):
     train_data_file: str = "train.extxyz"
     test_data_file: str = "test.extxyz"
     run_fits_on_different_cluster: bool = False
+    jobprefix: str = ""
+
+    def __post_init__(self):  # noqa: D105
+        self.name = f"{self.jobprefix}data_preprocessing_for_fitting"
 
     @job(data=["database_dict"])
     def make(

@@ -4,28 +4,23 @@ import ast
 import json
 import logging
 import os
+import sys
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Literal
 
 import ase.io
-import matgl
 import numpy as np
 from ase import Atoms
 from ase.constraints import (
     FixConstraint,
     FixSymmetry,
-    UnitCellFilter,
-    slice2enlist,
 )
 from ase.data import atomic_numbers, chemical_symbols
 from ase.geometry import find_mic
 from ase.optimize.precon import Exp, PreconLBFGS
 from ase.units import GPa
-from mace.calculators import MACECalculator
-from matgl.ext.ase import M3GNetCalculator
-from nequip.ase import NequIPCalculator
 from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 from threadpoolctl import threadpool_limits
@@ -36,9 +31,14 @@ from autoplex.fitting.common.utils import (
     extract_gap_label,
 )
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+try:
+    from ase.constraints import UnitCellFilter
+except ImportError:
+    from ase.filters import UnitCellFilter
+try:
+    from ase.constraints import slice2enlist
+except ImportError:
+    from ase.constraints.constraint import slice2enlist
 
 
 def extract_pairstyle(
@@ -338,7 +338,7 @@ def process_rss(
         ASE Atoms object representing the atomic configuration.
     mlip_type: str
         Choose one specific MLIP type:
-        'GAP' | 'J-ACE' | 'NequIP' | 'M3GNet' | 'MACE'.
+        'GAP' | 'J-ACE' | 'P-ACE' | 'NequIP' | 'M3GNet' | 'MACE'.
     mlip_path: str | Path
         Path to the MLIP model.
     output_file_name: str
@@ -425,8 +425,30 @@ def process_rss(
             lmpcmds=cmds, atom_types=atom_types, log_file="test.log", keep_alive=True
         )
 
+    elif mlip_type == "P-ACE":
+
+        mlip_path_obj = Path(mlip_path)
+        potential_file = None
+
+        if mlip_path_obj.is_file():
+            potential_file = mlip_path_obj
+        else:
+            target_file = mlip_path_obj / "output_potential.yaml"
+            if target_file.exists():
+                potential_file = target_file
+
+        if potential_file is None:
+            raise FileNotFoundError(
+                f"Could not find 'output_potential.yaml' in {mlip_path} for P-ACE."
+            )
+
+        from autoplex.fitting.common.utils import (  # noqa: PLC0415
+            AutoplexPyACECalculator,
+        )
+
+        pot = AutoplexPyACECalculator(basis_set=str(potential_file.resolve()))
+
     elif mlip_type == "NEQUIP":
-        nequip_label = os.path.join(mlip_path, "deployed_nequip_model.pth")
         if isolated_atom_energies:
             ele_syms = [
                 chemical_symbols[int(e_num)] for e_num in isolated_atom_energies
@@ -434,19 +456,40 @@ def process_rss(
 
         else:
             raise ValueError("isol_es is empty or not defined!")
-        pot = NequIPCalculator.from_deployed_model(
-            model_path=nequip_label,
-            device=device,
-            species_to_type_name={s: s for s in ele_syms},
-            set_global_options=False,
-        )
+
+        # adapt imports of NequIPCalculator
+        if sys.version_info[:2] == (3, 10):
+            from nequip.ase import NequIPCalculator  # noqa: PLC0415
+        else:
+            from nequip.integrations.ase import NequIPCalculator  # noqa: PLC0415
+
+        if hasattr(NequIPCalculator, "from_compiled_model"):
+            nequip_label = os.path.join(mlip_path, "deployed_ase.nequip.pt2")
+            pot = NequIPCalculator.from_compiled_model(
+                compile_path=nequip_label,
+                device=device,
+            )
+        else:
+            nequip_label = os.path.join(mlip_path, "deployed_nequip_model.pth")
+            pot = NequIPCalculator.from_deployed_model(
+                model_path=nequip_label,
+                device=device,
+                species_to_type_name={s: s for s in ele_syms},
+                set_global_options=False,
+            )
 
     elif mlip_type == "M3GNET":
+        import matgl  # noqa: PLC0415
+        from matgl.ext.ase import M3GNetCalculator  # noqa: PLC0415
+
         pot_file = matgl.load_model(path=mlip_path)
         pot = M3GNetCalculator(potential=pot_file)
 
     elif mlip_type == "MACE":
+        from mace.calculators import MACECalculator  # noqa: PLC0415
+
         mace_label = os.path.join(mlip_path, "checkpoints/MACE_model_run-123.model")
+
         pot = MACECalculator(model_paths=mace_label, device=device)
 
     unique_starting_index = atom.info["unique_starting_index"]
@@ -546,7 +589,7 @@ def process_rss(
 
 
 def minimize_structures(
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"],
+    mlip_type: Literal["GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"],
     mlip_path: str | Path,
     iteration_index: str,
     structures: list[Structure],
@@ -573,7 +616,7 @@ def minimize_structures(
 
     Parameters
     ----------
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
+    mlip_type: Literal["GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
         Choose one specific MLIP type to be fitted.
     mlip_path: str | Path
         Path to the MLIP model.

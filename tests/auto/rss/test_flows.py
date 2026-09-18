@@ -1,9 +1,45 @@
 import os
 from pathlib import Path
+import subprocess
+import pytest
 from jobflow import run_locally, Flow
 from tests.conftest import mock_rss, mock_do_rss_iterations, mock_do_rss_iterations_multi_jobs
 from autoplex.settings import RssConfig
 from autoplex.auto.rss.flows import RssMaker
+
+try: 
+    from matgl.models import M3GNET
+    has_m3gnet=True
+except:
+    has_m3gnet = False
+
+try:
+    import mace
+    has_mace=True
+except:
+    has_mace=False
+
+try: 
+    from calorine.nep import read_loss, write_nepfile, write_structures
+    has_nep=True
+except:
+    has_nep=False
+
+try:
+    from pyace.asecalc import PyACECalculator
+
+    has_ypace = True
+except ImportError:
+    PyACECalculator = object
+    has_ypace = False
+
+try: 
+    from nequip.ase import NequIPCalculator
+    has_nequip=True
+except:
+    has_nequip=False
+
+
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
@@ -119,7 +155,9 @@ def test_rss_workflow_custom_makers(test_dir, mock_vasp, memory_jobstore, clean_
     )
     assert rss_job.name == "rss"
 
-
+@pytest.mark.skipif(
+  not has_mace, reason="MACE is not installed"
+)
 def test_rss_workflow_ml_potentials(test_dir, memory_jobstore, clean_dir):
     from atomate2.forcefields.jobs import ForceFieldStaticMaker
     from autoplex.settings import RssConfig
@@ -141,7 +179,7 @@ def test_rss_workflow_ml_potentials(test_dir, memory_jobstore, clean_dir):
                   'isolatedatom_box': [20.0, 20.0, 20.0], 'e0_spin': False, 'include_dimer': False,
                   'dimer_box': [20.0, 20.0, 20.0], 'dimer_range': [1.0, 5.0], 'dimer_num': 21, 'dft_ref_file': 'vasp_ref.extxyz', 
                   'config_types': ['initial', 'traj_early', 'traj'], 'rss_group': ['traj'], 'test_ratio': 0.0,
-                  'regularization': True, 'retain_existing_sigma': False, 'scheme': 'linear-hull',
+                  'regularization': True, 'retain_existing_sigma': False, 'scheme': 'linear-hull', 'disable_testing': True,
                   'reg_minmax': [[0.1, 1.0], [0.001, 0.1], [0.0316, 0.316], [0.0632, 0.632]], 'distillation': False,
                   'force_max': None, 'force_label': None, 'pre_database_dir': None, 'mlip_type': 'GAP',
                   'ref_energy_name': 'REF_energy', 'ref_force_name': 'REF_forces', 'ref_virial_name': 'REF_virial',
@@ -301,7 +339,6 @@ def test_rss_workflow_ml_potentials(test_dir, memory_jobstore, clean_dir):
                                                                                               'compute_forces': True,
                                                                                               'config_type_weights': "{'Default':1.0}",
                                                                                               'compute_stress': False,
-                                                                                              'compute_statistics': False,
                                                                                               'correlation': 3,
                                                                                               'default_dtype': 'float32',
                                                                                               'device': 'cpu',
@@ -314,7 +351,7 @@ def test_rss_workflow_ml_potentials(test_dir, memory_jobstore, clean_dir):
                                                                                               'foundation_filter_elements': True,
                                                                                               'foundation_model': None,
                                                                                               'foundation_model_readout': True,
-                                                                                              'keep_checkpoint': False,
+                                                                                              'keep_checkpoints': False,
                                                                                               'keep_isolated_atoms': False,
                                                                                               'hidden_irreps': '128x0e + 128x1o',
                                                                                               'loss': 'huber',
@@ -383,6 +420,7 @@ def test_mock_workflow_for_GAP(test_dir, mock_vasp, memory_jobstore, clean_dir):
     }
 
     fake_run_vasp_kwargs = {
+        **{f"static_bulk_{i}": {"check_inputs": ["incar", "potcar"]} for i in range(18)},
         "static_isolated_0": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
         "static_dimer_0": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
         "static_dimer_1": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
@@ -516,9 +554,215 @@ def test_mock_workflow_for_GAP(test_dir, mock_vasp, memory_jobstore, clean_dir):
     selected_atoms = job2.output.resolve(memory_jobstore)
 
     assert len(selected_atoms) == 3
+
+
+@pytest.mark.skipif(
+  not has_ypace, reason="Pacemaker is not installed"
+)
+def test_mock_workflow_for_PACE(test_dir, mock_vasp, memory_jobstore, clean_dir):
+    """
+    Test the full RSS iterative workflow using Pacemaker (P-ACE).
+    This ensures the cycle of Fitting -> RSS -> Selection -> Refitting works for P-ACE.
+    """
+    test_files_dir = test_dir / "data/rss.extxyz"
+
+    ref_paths = {
+        **{f"static_bulk_{i}": f"rss/Si_bulk_{i + 1}/" for i in range(18)},
+        "static_isolated_0": "rss/Si_isolated_1/",
+        "static_dimer_0": "rss/Si_dimer_1/",
+        "static_dimer_1": "rss/Si_dimer_2/",
+        "static_dimer_2": "rss/Si_dimer_3/",
+    }
+
+    fake_run_vasp_kwargs = {
+        "static_isolated_0": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
+        "static_dimer_0": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
+        "static_dimer_1": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
+        "static_dimer_2": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
+    }
+
+    mock_vasp(ref_paths, fake_run_vasp_kwargs)
+
+    custom_fit_settings = {
+        "optimizer": "BFGS",
+        "maxiter": 10,
+        "repulsion": "auto", 
+        "trainable_parameters": "ALL",
+        "loss": {
+            "kappa": 0.75,
+            "L1_coeffs": 1.0e-08, "L2_coeffs": 1.0e-08, "w0_rad": 1.0e-08,
+            "w1_coeffs": 0, "w1_rad": 1.0e-08, "w2_coeffs": 0, "w2_rad": 1.0e-08
+        }
+    }
     
-    
-def test_mock_workflow_for_MACE(test_dir, mock_vasp, memory_jobstore, clean_dir):
+    custom_potential = {
+        "elements": ["Si"],
+        "deltaSplineBins": 0.001,
+        "embeddings": {
+            "ALL": {
+                "npot": "FinnisSinclairShiftedScaled",
+                "fs_parameters": [1, 1, 7.5577, 0.101],
+                "ndensity": 2,
+                "rho_core_cut": 3000, "drho_core_cut": 500
+            }
+        },
+        "bonds": {
+             "ALL": {
+                "radbase": "SBessel",
+                "radparameters": [3.3135],
+                "rcut": 5.0, # Slightly reduced rcut for mock cells
+                "dcut": 0.0189, "NameofCutoffFunction": "cos"
+            }
+        },
+        "functions": {
+            # Low order for stability
+            "ALL": {"nradmax_by_orders": [15, 3], "lmax_by_orders": [0, 2]},  
+            "number_of_functions_per_element": 100
+        }
+    }
+
+    # Job 1: Initial Fitting
+    job1 = mock_rss(input_dir=test_files_dir,
+                    selection_method='cur',
+                    num_of_selection=18,
+                    bcur_params={'soap_paras': {'l_max': 3,
+                                                'n_max': 3,
+                                                'atom_sigma': 0.5,
+                                                'cutoff': 4.0,
+                                                'cutoff_transition_width': 1.0,
+                                                'zeta': 4.0,
+                                                'average': True,
+                                                'species': True,
+                                                },
+                                 },
+                    random_seed=42,
+                    e0_spin=True,
+                    isolated_atom=True,
+                    dimer=False,
+                    dimer_range=None,
+                    dimer_num=None,
+                    custom_incar={
+                        "ADDGRID": None,
+                        "ENCUT": 200,
+                        "EDIFF": 1E-04,
+                        "ISMEAR": 0,
+                        "SIGMA": 0.05,
+                        "PREC": "Normal",
+                        "ISYM": None,
+                        "KSPACING": 0.3,
+                        "NPAR": 8,
+                        "LWAVE": "False",
+                        "LCHARG": "False",
+                        "ENAUG": None,
+                        "GGA": None,
+                        "ISPIN": None,
+                        "LAECHG": None,
+                        "LELF": None,
+                        "LORBIT": None,
+                        "LVTOT": None,
+                        "NSW": None,
+                        "SYMPREC": None,
+                        "NELM": 50,
+                        "LMAXMIX": None,
+                        "LASPH": None,
+                        "AMIN": None,
+                    },
+                    dft_ref_file='vasp_ref.extxyz',
+                    test_ratio=0.1,
+                    regularization=True,
+                    distillation=False,
+                    f_max=0.7,
+                    pre_database_dir=None,
+                    mlip_type='P-ACE',
+                    ref_energy_name="REF_energy",
+                    ref_force_name="REF_forces",
+                    ref_virial_name="REF_virial",
+                    num_processes_fit=4,
+                    kt=0.6,
+                    
+                    fit=custom_fit_settings,
+                    potential=custom_potential,
+                    cutoff=5.0, # Must match rcut above
+                    
+                    backend={
+                        "evaluator": "tensorpot", 
+                        "batch_size_training": 5,
+                        "batch_size_evaluation": 5,
+                        "display_step": 1
+                    }
+                    )
+
+    # Job 2: RSS Search & Iteration
+    job2 = mock_do_rss_iterations(input=job1.output,
+                                  input_dir=test_files_dir,
+                                  selection_method1='cur',
+                                  selection_method2='bcur1s',
+                                  num_of_selection1=5,
+                                  num_of_selection2=3,
+                                  bcur_params={'soap_paras': {'l_max': 3,
+                                                              'n_max': 3,
+                                                              'atom_sigma': 0.5,
+                                                              'cutoff': 4.0,
+                                                              'cutoff_transition_width': 1.0,
+                                                              'zeta': 4.0,
+                                                              'average': True,
+                                                              'species': True,
+                                                              },
+                                               'frac_of_bcur': 0.8,
+                                               'bolt_max_num': 3000,
+                                               'kernel_exp': 4.0,
+                                               'energy_label': 'energy'},
+                                  random_seed=None,
+                                  e0_spin=False,
+                                  isolated_atom=False,
+                                  dimer=False,
+                                  dimer_range=None,
+                                  dimer_num=None,
+                                  custom_incar=None,
+                                  dft_ref_file='vasp_ref.extxyz',
+                                  rss_group='initial',
+                                  test_ratio=0.1,
+                                  regularization=True,
+                                  distillation=False,
+                                  f_max=200,
+                                  pre_database_dir=None,
+                                  mlip_type='P-ACE',
+                                  ref_energy_name="REF_energy",
+                                  ref_force_name="REF_forces",
+                                  ref_virial_name="REF_virial",
+                                  num_processes_fit=None,
+                                  scalar_pressure_method='exp',
+                                  scalar_exp_pressure=100,
+                                  scalar_pressure_exponential_width=0.2,
+                                  scalar_pressure_low=0,
+                                  scalar_pressure_high=50,
+                                  max_steps=100, 
+                                  force_tol=0.6,
+                                  stress_tol=0.6,
+                                  Hookean_repul=False,
+                                #   hookean_paras={(14, 14): (1.5, 5.0)},
+                                  num_processes_rss=4,
+                                  device="cpu",
+                                  stop_criterion=0.01,
+                                  max_iteration_number=9
+                                  )
+
+    response = run_locally(
+        Flow([job1, job2]),
+        create_folders=True,
+        ensure_success=True,
+        store=memory_jobstore
+    )
+
+    assert Path(job1.output["mlip_path"][0].resolve(memory_jobstore)).exists()
+
+    selected_atoms = job2.output.resolve(memory_jobstore)
+    assert len(selected_atoms) == 3 
+
+@pytest.mark.skipif(
+  not has_mace, reason="MACE is not installed"
+)
+def test_mock_workflow_for_mace(test_dir, mock_vasp, memory_jobstore, clean_dir):
     test_files_dir = test_dir / "data/rss.extxyz"
     # atoms = read(test_files_dir, index=':')
     # structures = [AseAtomsAdaptor.get_structure(atom) for atom in atoms]
@@ -532,6 +776,7 @@ def test_mock_workflow_for_MACE(test_dir, mock_vasp, memory_jobstore, clean_dir)
     }
 
     fake_run_vasp_kwargs = {
+        **{f"static_bulk_{i}": {"check_inputs": ["incar", "potcar"]} for i in range(18)},
         "static_isolated_0": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
         "static_dimer_0": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
         "static_dimer_1": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
@@ -690,6 +935,7 @@ def test_mock_workflow_multi_node(test_dir, mock_vasp, memory_jobstore, clean_di
     }
 
     fake_run_vasp_kwargs = {
+        **{f"static_bulk_{i}": {"check_inputs": ["incar", "potcar"]} for i in range(18)},
         "static_isolated_0": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
         "static_dimer_0": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
         "static_dimer_1": {"incar_settings": {"ISPIN": 2, "KSPACINGS": 2.0}},
@@ -840,3 +1086,58 @@ def test_rssmaker_custom_config_file(test_dir):
     assert rss.rss_config.device_for_rss == "cuda"
     assert rss.rss_config.isolatedatom_box == [10, 10, 10]
     assert rss.rss_config.dimer_box == [10, 10, 10]
+
+def test_rss_workflow(test_dir, mock_vasp, memory_jobstore, clean_dir):
+    from autoplex.settings import RssConfig
+    from autoplex.auto.rss.flows import RssMaker
+    from jobflow import Flow
+
+    from jobflow import run_locally
+
+    jobprefix='testprefix_'
+
+    # We need this to run the tutorial directly in the jupyter notebook
+    ref_paths = {
+        f"{jobprefix}static_bulk_0": "rss_Si_small/static_bulk_0",
+        f"{jobprefix}static_bulk_1": "rss_Si_small/static_bulk_1",
+        f"{jobprefix}static_bulk_2": "rss_Si_small/static_bulk_2",
+        f"{jobprefix}static_bulk_3": "rss_Si_small/static_bulk_3",
+        f"{jobprefix}static_bulk_4": "rss_Si_small/static_bulk_4",
+        f"{jobprefix}static_bulk_5": "rss_Si_small/static_bulk_5",
+        f"{jobprefix}static_bulk_6": "rss_Si_small/static_bulk_6",
+        f"{jobprefix}static_bulk_7": "rss_Si_small/static_bulk_7",
+        f"{jobprefix}static_bulk_8": "rss_Si_small/static_bulk_8",
+        f"{jobprefix}static_bulk_9": "rss_Si_small/static_bulk_9",
+        f"{jobprefix}static_bulk_10": "rss_Si_small/static_bulk_10",
+        f"{jobprefix}static_bulk_11": "rss_Si_small/static_bulk_11",
+        f"{jobprefix}static_bulk_12": "rss_Si_small/static_bulk_12",
+        f"{jobprefix}static_bulk_13": "rss_Si_small/static_bulk_13",
+        f"{jobprefix}static_bulk_14": "rss_Si_small/static_bulk_14",
+        f"{jobprefix}static_bulk_15": "rss_Si_small/static_bulk_15",
+        f"{jobprefix}static_bulk_16": "rss_Si_small/static_bulk_16",
+        f"{jobprefix}static_bulk_17": "rss_Si_small/static_bulk_17",
+        f"{jobprefix}static_bulk_18": "rss_Si_small/static_bulk_18",
+        f"{jobprefix}static_bulk_19": "rss_Si_small/static_bulk_19",
+        f"{jobprefix}static_isolated_0": "rss_Si_small/static_isolated_0",
+    }
+
+    fake_run_vasp_kwargs = {
+        **{f"{jobprefix}static_bulk_{i}": {"incar_settings": ["NSW", "ISMEAR"], "check_inputs": ["incar", "potcar"]} for i in
+           range(20)},
+        f"{jobprefix}static_isolated_0": {"incar_settings": ["NSW", "ISMEAR"], "check_inputs": ["incar", "potcar"]},
+    }
+
+    rss_config = RssConfig.from_file(test_dir/"rss/rss_si_config.yaml")
+
+    rss_job = RssMaker(name="rss", rss_config=rss_config).make(jobprefix=jobprefix)
+    from atomate2.vasp.powerups import update_user_incar_settings
+    rss_job=update_user_incar_settings(rss_job, {"NPAR":8})
+    mock_vasp(ref_paths, fake_run_vasp_kwargs)
+
+    responses=run_locally(
+        Flow(jobs=[rss_job], output=rss_job.output),
+        create_folders=True,
+        ensure_success=True,
+        store=memory_jobstore,
+    )
+    assert rss_job.name == "rss"

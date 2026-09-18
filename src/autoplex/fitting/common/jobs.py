@@ -1,5 +1,6 @@
 """General fitting jobs using several MLIPs available."""
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,7 @@ from autoplex.fitting.common.utils import (
     mace_fitting,
     nep_fitting,
     nequip_fitting,
+    pace_fitting,
 )
 
 
@@ -34,10 +36,12 @@ def machine_learning_fit(
     ref_energy_name: str = "REF_energy",
     ref_force_name: str = "REF_forces",
     ref_virial_name: str = "REF_virial",
+    ref_stress_name: str = "REF_stress",
     device: str = "cuda",
     database_dict: dict | None = None,
     hyperpara_opt: bool = False,
     hyperparameters: MLIP_HYPERS = MLIP_HYPERS,
+    disable_testing: bool = False,
     **fit_kwargs,
 ):
     """
@@ -65,7 +69,7 @@ def machine_learning_fit(
         List of GPU indices to be used for fitting. Only used for NEP fitting.
     mlip_type: str
         Choose one specific MLIP type to be fitted:
-        'GAP' | 'J-ACE' | 'NEQUIP' | 'NEP' | 'M3GNET' | 'MACE'
+        'GAP' | 'J-ACE' | 'P-ACE' | 'NEQUIP' | 'NEP' | 'M3GNET' | 'MACE'
     ref_energy_name: str
         Reference energy name.
     ref_force_name: str
@@ -84,6 +88,8 @@ def machine_learning_fit(
     run_fits_on_different_cluster: bool
         Indicates if fits are to be run on a different cluster.
         If True, the fitting data (train.extxyz, test.extxyz) is stored in the database.
+    disable_testing: bool
+        Whether to disable running the model on test data. Default is False.
     fit_kwargs: dict
         Additional keyword arguments for MLIP fitting.
     """
@@ -125,8 +131,9 @@ def machine_learning_fit(
     if mlip_type == "GAP":
         for train_name, test_name in zip(train_files, test_files):
             if (database_dir / train_name).exists() and (
-                database_dir / test_name
-            ).exists():
+                (database_dir / test_name).exists() or disable_testing
+            ):
+
                 train_test_error = gap_fitting(
                     db_dir=database_dir,
                     hyperparameters=hyperparameters.GAP,
@@ -140,6 +147,7 @@ def machine_learning_fit(
                     ref_virial_name=ref_virial_name,
                     train_name=train_name,
                     test_name=test_name,
+                    disable_testing=disable_testing,
                     fit_kwargs=fit_kwargs,
                 )
                 mlip_paths.append(train_test_error["mlip_path"])
@@ -153,7 +161,53 @@ def machine_learning_fit(
             ref_force_name=ref_force_name,
             ref_virial_name=ref_virial_name,
             num_processes_fit=num_processes_fit,
+            disable_testing=disable_testing,
             fit_kwargs=fit_kwargs,
+        )
+        mlip_paths.append(train_test_error["mlip_path"])
+
+    elif mlip_type == "P-ACE":
+
+        from autoplex.fitting.mlip_hypers import PacemakerSettings  # noqa: PLC0415
+
+        pace_specific_keys = {
+            "cutoff",
+            "seed",
+            "metadata",
+            "potential",
+            "data",
+            "fit",
+            "backend",
+        }
+        pace_kwargs = {k: v for k, v in fit_kwargs.items() if k in pace_specific_keys}
+
+        pace_hypers = (
+            PacemakerSettings(**pace_kwargs) if pace_kwargs else hyperparameters.P_ACE
+        )
+
+        # if not species_list:
+        #     if pace_hypers.potential and "elements" in pace_hypers.potential:
+        if (
+            not species_list
+            and pace_hypers.potential
+            and "elements" in pace_hypers.potential
+        ):
+            species_list = pace_hypers.potential["elements"]
+
+        remaining_fit_kwargs = {
+            k: v for k, v in fit_kwargs.items() if k not in pace_specific_keys
+        }
+
+        train_test_error = pace_fitting(
+            db_dir=database_dir,
+            species_list=species_list,
+            hyperparameters=pace_hypers,
+            fit_kwargs=remaining_fit_kwargs,  # Pass only non-P-ACE params
+            isolated_atom_energies=isolated_atom_energies,
+            ref_energy_name=ref_energy_name,
+            ref_force_name=ref_force_name,
+            ref_virial_name=ref_virial_name,
+            num_processes_fit=num_processes_fit,
         )
         mlip_paths.append(train_test_error["mlip_path"])
 
@@ -169,19 +223,29 @@ def machine_learning_fit(
             ref_virial_name=ref_virial_name,
             species_list=species_list,
             gpu_identifier_indices=gpu_identifier_indices,
+            disable_testing=disable_testing,
             fit_kwargs=fit_kwargs,
         )
 
         mlip_paths.append(train_test_error["mlip_path"])
 
     elif mlip_type == "NEQUIP":
+        if sys.version_info[:2] == (3, 10):
+            from autoplex.fitting.mlip_hypers._nequip_hypers import (  # noqa: PLC0415
+                NEQUIPSettingsOld as NEQUIPSettings,
+            )
+
+            nequip_hp = NEQUIPSettings()
+        else:
+            nequip_hp = hyperparameters.NEQUIP
         train_test_error = nequip_fitting(
             db_dir=database_dir,
-            hyperparameters=hyperparameters.NEQUIP,
+            hyperparameters=nequip_hp,
             isolated_atom_energies=isolated_atom_energies,
             ref_energy_name=ref_energy_name,
             ref_force_name=ref_force_name,
             ref_virial_name=ref_virial_name,
+            disable_testing=disable_testing,
             fit_kwargs=fit_kwargs,
             device=device,
         )
@@ -194,6 +258,7 @@ def machine_learning_fit(
             ref_energy_name=ref_energy_name,
             ref_force_name=ref_force_name,
             ref_virial_name=ref_virial_name,
+            disable_testing=disable_testing,
             fit_kwargs=fit_kwargs,
             device=device,
         )
@@ -211,7 +276,12 @@ def machine_learning_fit(
         )
         mlip_paths.append(train_test_error["mlip_path"])
 
-    check_conv = check_convergence(train_test_error["test_error"])
+    error = (
+        train_test_error["train_error"]
+        if disable_testing
+        else train_test_error["test_error"]
+    )
+    check_conv = check_convergence(error)
 
     return {
         "mlip_path": mlip_paths,

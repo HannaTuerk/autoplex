@@ -1,5 +1,6 @@
 """RSS (random structure searching) flow for exploring and learning potential energy surfaces from scratch."""
 
+import logging
 from dataclasses import dataclass, field
 
 from atomate2.forcefields.jobs import ForceFieldStaticMaker
@@ -11,6 +12,10 @@ from jobflow import Flow, Maker, Response, job
 from autoplex.auto.rss.jobs import do_rss_iterations, initial_rss
 from autoplex.misc.castep.jobs import CastepStaticMaker
 from autoplex.settings import RssConfig
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
 @dataclass
@@ -217,7 +222,7 @@ class RssMaker(Maker):
         pre_database_dir: str | None
             Directory where the previous database was saved.
         mlip_type: str
-            Choose one specific MLIP type to be fitted: 'GAP' | 'J-ACE' | 'NEQUIP' | 'M3GNET' | 'MACE'.
+            Choose one specific MLIP type to be fitted: 'GAP' | 'J-ACE' | 'P-ACE' | 'NEQUIP' | 'M3GNET' | 'MACE'.
             Default is 'GAP'.
         ref_energy_name: str
             Reference energy name. Default is 'REF_energy'.
@@ -309,6 +314,19 @@ class RssMaker(Maker):
                 "'train_from_scratch' must be set in the configuration file or passed as a keyword argument!!"
             )
 
+        if config_params["disable_testing"] and config_params["test_ratio"] != 0.0:
+            logging.warning("Testing disabled. Setting test_ratio to 0.0.")
+            config_params["test_ratio"] = 0.0
+
+        if (
+            config_params["train_from_scratch"]
+            and config_params["test_ratio"] == 0.0
+            and not config_params["disable_testing"]
+        ):
+            raise ValueError(
+                "A prebuilt test set should be present if testing is enabled and `test_ratio` is set to 0."
+            )
+
         rss_flow = []
 
         if config_params["train_from_scratch"]:
@@ -353,6 +371,7 @@ class RssMaker(Maker):
                 static_energy_maker_isolated_atoms=self.static_energy_maker_isolated_atoms,
                 **initial_params,
             )
+            initial_rss_job.name = f'{config_params["jobprefix"]}{initial_rss_job.name}'
             rss_flow.append(initial_rss_job)
 
         rss_group = config_params["rss_group"]
@@ -403,6 +422,7 @@ class RssMaker(Maker):
                 **rss_params,
             )
 
+        do_rss_job.name = f'{config_params["jobprefix"]}{do_rss_job.name}'
         rss_flow.append(do_rss_job)
 
         return Response(replace=Flow(rss_flow), output=do_rss_job.output)

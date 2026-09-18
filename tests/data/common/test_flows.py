@@ -1,13 +1,13 @@
+import os
 from autoplex.data.common.flows import GenerateTrainingDataForTesting, DFTStaticLabelling
 from ase.io import read
 from pymatgen.core.structure import Structure
-from atomate2.settings import Atomate2Settings
+
 from jobflow import run_locally, Flow
 
 
 def test_vasp_static(test_dir, mock_vasp, memory_jobstore, clean_dir):
     from autoplex.data.common.jobs import collect_dft_data
-    settings = Atomate2Settings()
 
     poscar_paths = {
         f"static_bulk_{i}": test_dir / f"vasp/rss/Si_bulk_{i + 1}/inputs/POSCAR"
@@ -96,9 +96,9 @@ def test_vasp_static(test_dir, mock_vasp, memory_jobstore, clean_dir):
 
 
 def test_generate_training_data_for_testing(
-        vasp_test_dir, test_dir, memory_jobstore, clean_dir
+        vasp_test_dir, test_dir, memory_jobstore, clean_dir, tmp_path
 ):
-
+    cwd = os.getcwd()
     path_to_struct = vasp_test_dir / "dft_ml_data_generation" / "POSCAR"
     potential_file_dir = test_dir / "fitting" / "ref_files" / "gap_file.xml"
     structure = Structure.from_file(path_to_struct)
@@ -109,7 +109,10 @@ def test_generate_training_data_for_testing(
         n_structures=3,
         steps=1,
     )
+    
+    os.chdir(tmp_path)
 
     run_locally(
         generate_data, create_folders=True, ensure_success=False, store=memory_jobstore
     )  # atomate2 switched from pckl to json files for the trajectories --> job fails in its current state
+    os.chdir(cwd)

@@ -48,8 +48,9 @@ RUN curl -fsSL https://www.mtg.msm.cam.ac.uk/files/airss-0.9.3.tgz -o /opt/airss
     && tar -xf /opt/airss-0.9.3.tgz -C /opt \
     && rm /opt/airss-0.9.3.tgz \
     && cd /opt/airss \
-    && make \
-    && make install \
+    && make spglib \
+    && make internal \
+    && make install_internal \
     && make neat
 
 # Add Buildcell to PATH
@@ -80,7 +81,11 @@ WORKDIR /workspace
 COPY . /workspace
 
 # Install autoplex, testing dependencies and clear cache
-RUN python -m pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir uv \
-    && uv pip install pre-commit pytest pytest-mock pytest-split pytest-cov types-setuptools \
-    && uv pip install --prerelease=allow .[strict,docs] && uv cache clean && rm -rf /tmp/*
+RUN python -m pip install --upgrade pip \
+ && pip install uv \
+ && uv pip install --system pre-commit pytest pytest-mock pytest-split pytest-cov types-setuptools \
+ && uv pip install --system "scikit-build-core<0.10" \
+ && uv pip install --system "setuptools-scm>=8.0" nanobind \
+ && uv pip install --system --no-build-isolation "phonopy==2.30.1" \
+ && uv pip install --system ".[strict-base,docs]" \
+ && uv cache clean && rm -rf /tmp/*

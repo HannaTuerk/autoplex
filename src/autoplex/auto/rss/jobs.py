@@ -29,6 +29,7 @@ logging.basicConfig(
 def initial_rss(
     tag: str,
     generated_struct_numbers: list[int],
+    jobprefix: str = "",
     num_of_initial_selected_structs: list[int] | None = None,
     cell_seed_paths: list[str] | None = None,
     buildcell_options: list[dict] | None = None,
@@ -57,6 +58,7 @@ def initial_rss(
     dft_ref_file: str = "dft_ref.extxyz",
     rss_group: str = "initial",
     test_ratio: float = 0.1,
+    disable_testing: bool = False,
     regularization: bool = False,
     retain_existing_sigma: bool = False,
     scheme: str | None = None,
@@ -66,7 +68,9 @@ def initial_rss(
     force_max: float | None = None,
     force_label: str = "REF_forces",
     pre_database_dir: str | None = None,
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"] = "GAP",
+    mlip_type: Literal[
+        "GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"
+    ] = "GAP",
     ref_energy_name: str = "REF_energy",
     ref_force_name: str = "REF_forces",
     ref_virial_name: str = "REF_virial",
@@ -87,6 +91,8 @@ def initial_rss(
         if the stoichiometric ratio of elements is defined in the 'cell_seed_paths' or 'buildcell_options'.
     generated_struct_numbers: list[int]
         Expected number of generated randomized unit cells.
+    jobprefix: str
+        Prefix that precedes the jobname.
     num_of_initial_selected_structs: list[int] | None
         Number of structures to be sampled. Default is None.
     cell_seed_paths: list[str]
@@ -148,6 +154,8 @@ def initial_rss(
     test_ratio: float
         The proportion of the test set after splitting the data.
         If None, no splitting will be performed. Default is 0.1.
+    disable_testing: bool
+        Whether to disable running the model on test data. Default is False.
     regularization: bool
         If true, apply regularization. This only works for GAP. Default is False.
     retain_existing_sigma: bool
@@ -171,7 +179,7 @@ def initial_rss(
         The label of force values to use for distillation. Default is 'REF_forces'.
     pre_database_dir: str | None
         Directory where the previous database was saved. Default is None.
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
+    mlip_type: Literal["GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
         Choose one specific MLIP type to be fitted. Default is 'GAP'.
     ref_energy_name: str
         Reference energy name. Default is 'REF_energy'.
@@ -212,6 +220,7 @@ def initial_rss(
         fragment_numbers=fragment_numbers,
         selected_struct_numbers=num_of_initial_selected_structs,
         tag=tag,
+        jobprefix=jobprefix,
         num_processes=num_processes_buildcell,
         initial_selection_enabled=initial_selection_enabled,
         bcur_params=bcur_params,
@@ -221,6 +230,7 @@ def initial_rss(
     # TODO: this needs to be generalized beyond VASP and instead be able to use a different dft calculator,
     # or a force field
     do_dft_static = DFTStaticLabelling(
+        jobprefix=jobprefix,
         e0_spin=e0_spin,
         isolatedatom_box=isolatedatom_box,
         include_isolated_atom=include_isolated_atom,
@@ -239,8 +249,10 @@ def initial_rss(
     do_data_collection = collect_dft_data(
         dft_ref_file=dft_ref_file, rss_group=rss_group, dft_dirs=do_dft_static.output
     )
+    do_data_collection.name = f"{jobprefix}{do_data_collection.name}"
     do_data_preprocessing = preprocess_data(
         test_ratio=test_ratio,
+        disable_testing=disable_testing,
         regularization=regularization,
         retain_existing_sigma=retain_existing_sigma,
         scheme=scheme,
@@ -253,7 +265,9 @@ def initial_rss(
         reg_minmax=reg_minmax,
         isolated_atom_energies=do_data_collection.output["isolated_atom_energies"],
     )
+    do_data_preprocessing.name = f"{jobprefix}{do_data_preprocessing.name}"
     do_mlip_fit = MLIPFitMaker(
+        jobprefix=jobprefix,
         mlip_type=mlip_type,
         ref_energy_name=ref_energy_name,
         ref_force_name=ref_force_name,
@@ -262,6 +276,7 @@ def initial_rss(
         apply_data_preprocessing=False,
         auto_delta=auto_delta,
         glue_xml=False,
+        disable_testing=disable_testing,
     ).make(
         isolated_atom_energies=do_data_collection.output["isolated_atom_energies"],
         database_dir=do_data_preprocessing.output,
@@ -295,6 +310,7 @@ def do_rss_iterations(
     input: dict,
     tag: str,
     generated_struct_numbers: list[int],
+    jobprefix: str = "",
     num_of_initial_selected_structs: list[int] | None = None,
     cell_seed_paths: list[str] | None = None,
     buildcell_options: list[dict] | None = None,
@@ -325,6 +341,7 @@ def do_rss_iterations(
     dft_ref_file: str = "dft_ref.extxyz",
     rss_group: str = "rss",
     test_ratio: float = 0.1,
+    disable_testing: bool = False,
     regularization: bool = False,
     retain_existing_sigma: bool = False,
     scheme: str | None = None,
@@ -333,7 +350,9 @@ def do_rss_iterations(
     distillation: bool = True,
     force_max: float = 200,
     force_label: str = "REF_forces",
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"] = "GAP",
+    mlip_type: Literal[
+        "GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"
+    ] = "GAP",
     ref_energy_name: str = "REF_energy",
     ref_force_name: str = "REF_forces",
     ref_virial_name: str = "REF_virial",
@@ -386,6 +405,8 @@ def do_rss_iterations(
             kt: float
                 The value of kt.
 
+    jobprefix: str
+        The prefix that precedes the jobname.
     tag: str
         Tag of systems. It can also be used for setting up elements and stoichiometry.
         For example, the tag of 'SiO2' will be recognized as a 1:2 ratio of Si to O and
@@ -457,6 +478,8 @@ def do_rss_iterations(
         Group name for GAP RSS. Default is 'rss'.
     test_ratio: float
         The proportion of the test set after splitting the data. Default is 0.1.
+    disable_testing: bool
+        Whether to disable running the model on test data. Default is False.
     regularization: bool
         If true, apply regularization. This only works for GAP. Default is False.
     retain_existing_sigma: bool
@@ -478,7 +501,7 @@ def do_rss_iterations(
         Maximum force value to exclude structures. Default is 200.
     force_label: str
         The label of force values to use for distillation. Default is 'REF_forces'.
-    mlip_type: Literal["GAP", "J-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
+    mlip_type: Literal["GAP", "J-ACE", "P-ACE", "NEP", "NEQUIP", "M3GNET", "MACE"]
         Choose one specific MLIP type to be fitted. Default is 'GAP'.
     ref_energy_name: str
         Reference energy name. Default is 'REF_energy'.
@@ -586,6 +609,7 @@ def do_rss_iterations(
             fragment_numbers=fragment_numbers,
             selected_struct_numbers=num_of_initial_selected_structs,
             tag=tag,
+            jobprefix=jobprefix,
             num_processes=num_processes_buildcell,
             initial_selection_enabled=initial_selection_enabled,
             bcur_params=bcur_params,
@@ -611,7 +635,9 @@ def do_rss_iterations(
             device=device_for_rss,
             num_groups=num_groups,
             config_type=config_type,
+            jobprefix=jobprefix,
         )
+        do_rss.name = f"{jobprefix}{do_rss.name}"
         do_data_sampling = sample_data(
             selection_method=rss_selection_method,
             num_of_selection=num_of_rss_selected_structs,
@@ -622,7 +648,9 @@ def do_rss_iterations(
             isolated_atom_energies=input["isolated_atom_energies"],
             remove_traj_files=remove_traj_files,
         )
+        do_data_sampling.name = f"{jobprefix}{do_data_sampling.name}"
         do_dft_static = DFTStaticLabelling(
+            jobprefix=jobprefix,
             e0_spin=e0_spin,
             isolatedatom_box=isolatedatom_box,
             include_isolated_atom=include_isolated_atom,
@@ -643,8 +671,10 @@ def do_rss_iterations(
             rss_group=rss_group,
             dft_dirs=do_dft_static.output,
         )
+        do_data_collection.name = f"{jobprefix}{do_data_collection.name}"
         do_data_preprocessing = preprocess_data(
             test_ratio=test_ratio,
+            disable_testing=disable_testing,
             regularization=regularization,
             retain_existing_sigma=retain_existing_sigma,
             scheme=scheme,
@@ -657,7 +687,9 @@ def do_rss_iterations(
             reg_minmax=reg_minmax,
             isolated_atom_energies=input["isolated_atom_energies"],
         )
+        do_data_preprocessing.name = f"{jobprefix}{do_data_preprocessing.name}"
         do_mlip_fit = MLIPFitMaker(
+            jobprefix=jobprefix,
             mlip_type=mlip_type,
             ref_energy_name=ref_energy_name,
             ref_force_name=ref_force_name,
@@ -666,6 +698,7 @@ def do_rss_iterations(
             apply_data_preprocessing=False,
             auto_delta=auto_delta,
             glue_xml=False,
+            disable_testing=disable_testing,
         ).make(
             database_dir=do_data_preprocessing.output,
             isolated_atom_energies=input["isolated_atom_energies"],
@@ -692,6 +725,7 @@ def do_rss_iterations(
             generated_struct_numbers=generated_struct_numbers,
             num_of_initial_selected_structs=num_of_initial_selected_structs,
             tag=tag,
+            jobprefix=jobprefix,
             cell_seed_paths=cell_seed_paths,
             buildcell_options=buildcell_options,
             fragment_file=fragment_file,
@@ -715,6 +749,7 @@ def do_rss_iterations(
             dft_ref_file=dft_ref_file,
             rss_group=rss_group,
             test_ratio=test_ratio,
+            disable_testing=disable_testing,
             regularization=regularization,
             retain_existing_sigma=retain_existing_sigma,
             scheme=scheme,
@@ -752,6 +787,7 @@ def do_rss_iterations(
             static_energy_maker_isolated_atoms=static_energy_maker_isolated_atoms,
             **fit_kwargs,
         )
+        do_iteration.name = f"{jobprefix}{do_iteration.name}"
 
         job_list = [
             do_randomized_structure_generation,

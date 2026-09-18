@@ -1,5 +1,7 @@
 """Utility functions for fitting jobs."""
 
+from __future__ import annotations
+
 import contextlib
 import logging
 import multiprocessing as mp
@@ -12,56 +14,95 @@ import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from functools import partial
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import ase
-import lightning as pl
-import matgl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import quippy.potential
-import torch
 from ase.atoms import Atoms
 from ase.calculators.singlepoint import SinglePointCalculator
-from ase.constraints import voigt_6_to_full_3x3_stress
 from ase.data import chemical_symbols
 from ase.io import read, write
 from ase.io.extxyz import XYZError
 from atomate2.utils.path import strip_hostname
-from calorine.nep import read_loss, write_nepfile, write_structures
-from dgl.data.utils import split_dataset
-from matgl.apps.pes import Potential
-from matgl.ext.pymatgen import Structure2Graph, get_element_list
-from matgl.graph.data import MGLDataLoader, MGLDataset, collate_fn_pes
-from matgl.models import M3GNet
-from matgl.utils.training import PotentialLightningModule
 from monty.dev import requires
 from monty.serialization import dumpfn
-from nequip.ase import NequIPCalculator
 from numpy import ndarray
 from pydantic import Field
-from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
-from pytorch_lightning.loggers import CSVLogger
 from quippy import descriptors
 from scipy.spatial import ConvexHull
 from threadpoolctl import threadpool_limits
 
-from autoplex import (
-    GAP_HYPERS,
-    JACE_HYPERS,
-    M3GNET_HYPERS,
-    MACE_HYPERS,
-    NEP_HYPERS,
-    NEQUIP_HYPERS,
-)
+try:
+    from ase.constraints import voigt_6_to_full_3x3_stress
+except ImportError:
+    from ase.stress import voigt_6_to_full_3x3_stress
+
+try:
+    os.environ["MATGL_BACKEND"] = "DGL"
+    import lightning as pl
+    import matgl
+    import torch
+    from dgl.data.utils import split_dataset
+    from matgl.apps.pes import Potential
+    from matgl.ext.pymatgen import Structure2Graph, get_element_list
+    from matgl.graph.data import MGLDataLoader, MGLDataset, collate_fn_pes
+    from matgl.models import M3GNet
+    from matgl.utils.training import PotentialLightningModule
+    from pytorch_lightning.loggers import CSVLogger
+
+    has_m3gnet = True
+
+except ImportError:
+    has_m3gnet = False
+
+try:
+    from mace.tools.arg_parser import build_default_arg_parser
+
+    has_mace = True
+except ImportError:
+    has_mace = False
+
+try:
+    from calorine.nep import read_loss, write_nepfile, write_structures
+
+    has_nep = True
+except ImportError:
+    has_nep = False
+
+try:
+    from pyace.asecalc import PyACECalculator
+
+    has_ypace = True
+except ImportError:
+    PyACECalculator = object
+    has_ypace = False
+
+
+try:
+    if sys.version_info[:2] == (3, 10):
+        from nequip.ase import NequIPCalculator
+    else:
+        from nequip.integrations.ase import NequIPCalculator
+
+    has_nequip = True
+except ImportError:
+    has_nequip = False
+
 from autoplex.data.common.utils import (
     data_distillation,
     plot_energy_forces,
     rms_dict,
     stratified_dataset_split,
 )
+from autoplex.fitting.mlip_hypers import PacemakerSettings
+
+if TYPE_CHECKING:
+    from pymatgen.core import Structure
+
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -71,7 +112,7 @@ logging.basicConfig(
 def gap_fitting(
     db_dir: Path,
     species_list: list | None = None,
-    hyperparameters: GAP_HYPERS = GAP_HYPERS,
+    hyperparameters=None,
     num_processes_fit: int = 32,
     auto_delta: bool = True,
     glue_xml: bool = False,
@@ -80,6 +121,7 @@ def gap_fitting(
     ref_virial_name: str = "REF_virial",
     train_name: str = "train.extxyz",
     test_name: str = "test.extxyz",
+    disable_testing: bool = False,
     glue_file_path: str = "glue.xml",
     fit_kwargs: dict | None = None,  # pylint: disable=E3701
 ) -> dict:
@@ -110,6 +152,8 @@ def gap_fitting(
         Name of the training set file.
     test_name: str
         Name of the test set file.
+    disable_testing: bool
+        Whether to disable running the model on test data.
     glue_file_path: str
         Name of the glue.xml file path.
     fit_kwargs: dict
@@ -122,13 +166,24 @@ def gap_fitting(
         A dictionary with train_error, test_error, path_to_mlip
 
     """
+    if hyperparameters is None:
+        from autoplex import GAP_HYPERS  # noqa: PLC0415
+
+        hyperparameters = GAP_HYPERS
+
     hyperparameters = hyperparameters.model_copy(deep=True)
     # keep additional pre- and suffixes
     gap_file_xml = train_name.replace("train", "gap_file").replace(".extxyz", ".xml")
     quip_train_file = train_name.replace("train", "quip_train")
     quip_test_file = test_name.replace("test", "quip_test")
     mlip_path: Path = prepare_fit_environment(
-        db_dir, Path.cwd(), glue_xml, train_name, test_name, glue_file_path
+        db_dir,
+        Path.cwd(),
+        glue_xml,
+        disable_testing,
+        train_name,
+        test_name,
+        glue_file_path,
     )
 
     db_atoms = ase.io.read(os.path.join(db_dir, train_name), index=":")
@@ -281,11 +336,14 @@ def gap_fitting(
     logging.info(f"Training error of MLIP (eV/at.): {round(train_error, 7)}")
 
     # Calculate testing error
-    run_ase_gap(
-        num_processes_fit, test_data_path, gap_file_xml, quip_test_file, glue_xml
-    )
-    test_error = energy_remain(quip_test_file)
-    logging.info(f"Testing error of MLIP (eV/at.): {round(test_error, 7)}")
+    if disable_testing:
+        test_error = None
+    else:
+        run_ase_gap(
+            num_processes_fit, test_data_path, gap_file_xml, quip_test_file, glue_xml
+        )
+        test_error = energy_remain(quip_test_file)
+        logging.info(f"Testing error of MLIP (eV/at.): {round(test_error, 7)}")
 
     if not glue_xml and species_list:
         try:
@@ -326,12 +384,13 @@ def gap_fitting(
 )
 def jace_fitting(
     db_dir: str | Path,
-    hyperparameters: JACE_HYPERS = JACE_HYPERS,
+    hyperparameters=None,
     isolated_atom_energies: dict | None = None,
     ref_energy_name: str = "REF_energy",
     ref_force_name: str = "REF_forces",
     ref_virial_name: str = "REF_virial",
     num_processes_fit: int = 32,
+    disable_testing: bool = False,
     fit_kwargs: dict | None = None,
 ) -> dict:
     """
@@ -357,6 +416,8 @@ def jace_fitting(
         Reference virial name.
     num_processes_fit: int
         number of processes to use for parallel computation.
+    disable_testing: bool
+        Whether to disable running the model on test data.
     fit_kwargs: dict.
         optional dictionary with parameters for ace fitting with keys same as
         mlip-rss-defaults.json.
@@ -382,10 +443,16 @@ def jace_fitting(
     ------
     - ValueError: If the `isolated_atom_energies` dictionary is empty or not provided when required.
     """
+    if hyperparameters is None:
+        from autoplex import JACE_HYPERS  # noqa: PLC0415
+
+        hyperparameters = JACE_HYPERS
+
     hyperparameters = hyperparameters.model_copy(deep=True)
     train_atoms = ase.io.read(os.path.join(db_dir, "train.extxyz"), index=":")
-    source_file_path = os.path.join(db_dir, "test.extxyz")
-    shutil.copy(source_file_path, ".")
+    if not disable_testing:
+        source_file_path = os.path.join(db_dir, "test.extxyz")
+        shutil.copy(source_file_path, ".")
     isolated_atom_energies_update = {}
 
     if isolated_atom_energies:
@@ -425,6 +492,7 @@ def jace_fitting(
     cutoff = jace_hypers["cutoff"]
     solver = jace_hypers["solver"]
 
+    nl = "\n"
     ace_text = f"""using ACEpotentials
 using LinearAlgebra: norm, Diagonal
 using CSV, DataFrames
@@ -434,8 +502,8 @@ addprocs({num_processes_fit - 1}, exeflags="--project=$(Base.active_project())")
 
 data_file = "train_ace.extxyz"
 data = read_extxyz(data_file)
-test_data_file = "test.extxyz"
-test_data = read_extxyz(test_data_file)
+{f'test_data_file = "test.extxyz"{nl}test_data = read_extxyz(test_data_file){nl}'
+    if not disable_testing else f"test_data{nl}"}\
 data_keys = (energy_key = "{ref_energy_name}", force_key = "{ref_force_name}", virial_key = "{ref_virial_name}")
 
 model = acemodel(elements={formatted_species},
@@ -472,7 +540,8 @@ model_energies_train = [energy(potential, at) / length(at) for at in data]
 rmse_energy_train = norm(train_energies - model_energies_train) / sqrt(length(data))
 test_energies = [ JuLIP.get_data(at, "{ref_energy_name}") / length(at) for at in test_data]
 model_energies_pred = [energy(potential, at) / length(at) for at in test_data]
-rmse_energy_test = norm(test_energies - model_energies_pred) / sqrt(length(test_data))
+{f'rmse_energy_test = norm(test_energies - model_energies_pred) / sqrt(length(test_data)){nl}'
+    if not disable_testing else f'rmse_energy_test = missing{nl}'}\
 
 df = DataFrame(rmse_energy_train = rmse_energy_train, rmse_energy_test = rmse_energy_test)
 CSV.write("rmse_energies.csv", df)
@@ -487,6 +556,8 @@ export2lammps("acemodel.yace", model)
     os.system(f"export OMP_NUM_THREADS={num_processes_fit} && julia ace.jl")
 
     energy_err = pd.read_csv("rmse_energies.csv")
+    # Convert NaNs to None
+    energy_err = energy_err.where(pd.notna(energy_err), None)
     train_error = energy_err["rmse_energy_train"][0]
     test_error = energy_err["rmse_energy_test"][0]
 
@@ -499,12 +570,13 @@ export2lammps("acemodel.yace", model)
 
 def nep_fitting(
     db_dir: str | Path,
-    hyperparameters: NEP_HYPERS = NEP_HYPERS,
+    hyperparameters=None,
     ref_energy_name: str = "REF_energy",
     ref_force_name: str = "REF_forces",
     ref_virial_name: str = "REF_virial",
     species_list: list | None = None,
     gpu_identifier_indices: list[int] = list[0],
+    disable_testing: bool = False,
     fit_kwargs: dict | None = None,
 ) -> dict:
     """
@@ -526,6 +598,8 @@ def nep_fitting(
         List of element names (strings)
     gpu_identifier_indices: list[int]
         Indices that identifies the GPU that NEP should be run with
+    disable_testing: bool
+        Whether to disable running the model on test data.
     fit_kwargs: dict.
         optional dictionary with parameters for NEP fitting with keys same as
         mlip-rss-defaults.json.
@@ -597,10 +671,20 @@ def nep_fitting(
     dict[str, float]
         A dictionary mapping 'train_error', 'test_error', and 'mlip_path'.
     """
+    if hyperparameters is None:
+        from autoplex import NEP_HYPERS  # noqa: PLC0415
+
+        hyperparameters = NEP_HYPERS
+
     hyperparameters = hyperparameters.model_copy(deep=True)
 
     train_data = ase.io.read(os.path.join(db_dir, "train.extxyz"), index=":")
-    test_data = ase.io.read(os.path.join(db_dir, "test.extxyz"), index=":")
+    # AFAIK, NEP explicitly requires test set
+    test_data = (
+        ase.io.read(os.path.join(db_dir, "test.extxyz"), index=":")
+        if not disable_testing
+        else train_data
+    )
 
     try:
         train_nep = [
@@ -651,18 +735,22 @@ def nep_fitting(
 
     return {
         "train_error": metrics_df.RMSE_E_train.values[-1],
-        "test_error": metrics_df.RMSE_E_test.values[-1],
+        "test_error": (
+            metrics_df.RMSE_E_test.values[-1] if not disable_testing else None
+        ),
         "mlip_path": Path.cwd(),
     }
 
 
+@requires(has_nequip, "nequip package must be installed to fit NEQUIP potentials.")
 def nequip_fitting(
     db_dir: Path,
-    hyperparameters: NEQUIP_HYPERS = NEQUIP_HYPERS,
+    hyperparameters=None,
     isolated_atom_energies: dict | None = None,
     ref_energy_name: str = "REF_energy",
     ref_force_name: str = "REF_forces",
     ref_virial_name: str = "REF_virial",
+    disable_testing: bool = False,
     fit_kwargs: dict | None = None,
     device: str = "cuda",
 ) -> dict:
@@ -687,6 +775,8 @@ def nequip_fitting(
         Reference force name.
     ref_virial_name : str, optional
         Reference virial name.
+    disable_testing: bool
+        Whether to disable running the model on test data. Default is False.
     device: str
         specify device to use cuda or cpu
     fit_kwargs: dict.
@@ -728,6 +818,18 @@ def nequip_fitting(
     """
     [TODO] train Nequip on virials
     """
+    is_old_nequip = not hasattr(NequIPCalculator, "from_compiled_model")
+
+    if hyperparameters is None:
+        if is_old_nequip:
+            from autoplex.fitting.mlip_hypers._nequip_hypers import (  # noqa: PLC0415
+                NEQUIPSettingsOld as NEQUIPSettings,
+            )
+        else:
+            from autoplex.fitting.mlip_hypers import NEQUIPSettings  # noqa: PLC0415
+
+        hyperparameters = NEQUIPSettings()
+
     hyperparameters = hyperparameters.model_copy(deep=True)
 
     train_data = ase.io.read(os.path.join(db_dir, "train.extxyz"), index=":")
@@ -735,8 +837,13 @@ def nequip_fitting(
         at for at in train_data if "IsolatedAtom" not in at.info["config_type"]
     ]
     ase.io.write("train_nequip.extxyz", train_nequip, format="extxyz")
+    # AFAIK, NEQUIP also requires validation set
+    test_data = (
+        ase.io.read(os.path.join(db_dir, "test.extxyz"), index=":")
+        if not disable_testing
+        else train_data
+    )
 
-    test_data = ase.io.read(os.path.join(db_dir, "test.extxyz"), index=":")
     num_of_train = len(train_nequip)
     num_of_val = len(test_data)
 
@@ -750,42 +857,73 @@ def nequip_fitting(
     else:
         raise ValueError("isolated_atom_energies is empty or not defined!")
 
-    nequip_config_updates = {
-        "dataset_key_mapping": {
-            f"{ref_energy_name}": "total_energy",
-            f"{ref_force_name}": "forces",
-        },
-        "validation_dataset_key_mapping": {
-            f"{ref_energy_name}": "total_energy",
-            f"{ref_force_name}": "forces",
-        },
-        "chemical_symbols": ele_syms,
-        "dataset_file_name": "./train_nequip.extxyz",
-        "validation_dataset_file_name": f"{db_dir}/test.extxyz",
-        "n_train": num_of_train,
-        "n_val": num_of_val,
-    }
-    hyperparameters.update_parameters(nequip_config_updates)
+    # configure hyperparameters
 
     if fit_kwargs:
         hyperparameters.update_parameters(fit_kwargs)
 
-    nequip_hypers = hyperparameters.model_dump(by_alias=True)
+    if is_old_nequip:
 
-    dumpfn(nequip_hypers, "nequip.yaml")
+        hyperparameters.update_parameters(
+            {
+                "dataset_key_mapping": {
+                    f"{ref_energy_name}": "total_energy",
+                    f"{ref_force_name}": "forces",
+                },
+                "validation_dataset_key_mapping": {
+                    f"{ref_energy_name}": "total_energy",
+                    f"{ref_force_name}": "forces",
+                },
+                "chemical_symbols": ele_syms,
+                "dataset_file_name": "./train_nequip.extxyz",
+                "validation_dataset_file_name": f"{db_dir}/test.extxyz",
+                "n_train": num_of_train,
+                "n_val": num_of_val,
+            }
+        )
+    else:
+        hyperparameters.data.split_dataset.file_path = "train_nequip.extxyz"
+        hyperparameters.data.key_mapping = {
+            ref_energy_name: "total_energy",
+            ref_force_name: "forces",
+        }
+        hyperparameters.chemical_symbols = ele_syms
 
-    run_nequip("nequip-train nequip.yaml", "nequip_train")
-    run_nequip(
-        "nequip-deploy build --train-dir results/autoplex ./deployed_nequip_model.pth",
-        "nequip_deploy",
-    )
+    if is_old_nequip:
+        dumpfn(hyperparameters.model_dump(by_alias=True), "nequip.yaml")
+    else:
+        hyperparameters.to_yaml("nequip.yaml")
 
-    calc = NequIPCalculator.from_deployed_model(
-        model_path="deployed_nequip_model.pth",
-        device=device,
-        species_to_type_name={s: s for s in ele_syms},
-        set_global_options=False,
-    )
+    if is_old_nequip:
+        run_nequip("nequip-train nequip.yaml", "nequip_train")
+        run_nequip(
+            "nequip-deploy build --train-dir results/autoplex ./deployed_nequip_model.pth",
+            "nequip_deploy",
+        )
+        calc = NequIPCalculator.from_deployed_model(
+            model_path="deployed_nequip_model.pth",
+            device=device,
+            species_to_type_name={s: s for s in ele_syms},
+            set_global_options=False,
+        )
+    else:
+        ckpt_path = "./nequip_model/best.ckpt"
+        model_package_path = "./nequip_model/model.nequip.zip"
+        compiled_path = "deployed_ase.nequip.pt2"
+
+        run_nequip("nequip-train -cn nequip.yaml", "nequip_train")
+        run_nequip(
+            f"nequip-package build {ckpt_path} {model_package_path}",
+            "nequip_package",
+        )
+        run_nequip(
+            f"nequip-compile --mode aotinductor --device {device} --target ase {model_package_path} {compiled_path}",
+            "nequip_package",
+        )
+        calc = NequIPCalculator.from_compiled_model(
+            compile_path="deployed_ase.nequip.pt2",
+            device=device,
+        )
 
     ener_out_train = []
     for at in train_nequip:
@@ -807,7 +945,9 @@ def nequip_fitting(
         at.info["REF_energy"] / len(at.get_chemical_symbols()) for at in test_data
     ]
 
-    test_error = rms_dict(ener_in_test, ener_out_test)["rmse"]
+    test_error = (
+        rms_dict(ener_in_test, ener_out_test)["rmse"] if not disable_testing else None
+    )
 
     return {
         "train_error": train_error,
@@ -816,14 +956,16 @@ def nequip_fitting(
     }
 
 
+@requires(has_m3gnet, "matgl package must be installed to fit M3GNET potentials.")
 def m3gnet_fitting(
     db_dir: Path,
-    hyperparameters: M3GNET_HYPERS = M3GNET_HYPERS,
+    hyperparameters=None,
     device: str = "cuda",
     ref_energy_name: str = "REF_energy",
     ref_force_name: str = "REF_forces",
     ref_virial_name: str = "REF_virial",
     test_equal_to_val: bool = True,
+    disable_testing: bool = False,
     fit_kwargs: dict | None = None,
 ) -> dict:
     """
@@ -845,6 +987,8 @@ def m3gnet_fitting(
         Reference virial name.
     test_equal_to_val: bool
         If True, the testing dataset will be the same as the validation dataset.
+    disable_testing: bool
+        Whether to disable running the model on test data. Default is False.
     fit_kwargs: dict.
         optional dictionary with parameters for M3GNET fitting.
 
@@ -890,6 +1034,10 @@ def m3gnet_fitting(
     *    Availability: https://matgl.ai/tutorials%2FTraining%20a%20M3GNet%20Potential%20with%20PyTorch%20Lightning.html
     *    License: BSD 3-Clause License
     """
+    if hyperparameters is None:
+        from autoplex import M3GNET_HYPERS  # noqa: PLC0415
+
+        hyperparameters = M3GNET_HYPERS
     hyperparameters = hyperparameters.model_copy(deep=True)
 
     if fit_kwargs:
@@ -1080,7 +1228,14 @@ def m3gnet_fitting(
             logging.info(
                 f"Finetuning foundation model: {m3gnet_hypers['foundation_model']}"
             )
-            m3gnet_nnp = matgl.load_model(m3gnet_hypers["foundation_model"])
+            try:
+                m3gnet_nnp = matgl.load_model(m3gnet_hypers["foundation_model"])
+            except ValueError:
+                base_matgl_url = "https://github.com/materialyzeai/matgl/raw/v2.1.1/pretrained_models/"
+                matgl.config.PRETRAINED_MODELS_BASE_URL = base_matgl_url
+                matgl.utils.io.PRETRAINED_MODELS_BASE_URL = base_matgl_url
+                m3gnet_nnp = matgl.load_model(m3gnet_hypers["foundation_model"])
+
             model = m3gnet_nnp.model
             property_offset = (
                 m3gnet_nnp.element_refs.property_offset
@@ -1222,20 +1377,28 @@ def m3gnet_fitting(
 
     return {
         "train_error": extracted_values["train_Energy_RMSE"],
-        "test_error": extracted_values["test_Energy_RMSE"],
+        "test_error": (
+            extracted_values["test_Energy_RMSE"] if not disable_testing else None
+        ),
         "mlip_path": mlip_path,
     }
 
 
+@requires(
+    has_mace,
+    "mace-torch package must be installed to fit MACE Potentials",
+)
 def mace_fitting(
     db_dir: Path,
-    hyperparameters: MACE_HYPERS = MACE_HYPERS,
+    hyperparameters=None,
     device: Literal["cpu", "cuda", "mps", "xpu"] = Field(
         default="cpu", description="Device to be used for model fitting"
     ),
     ref_energy_name: str = "REF_energy",
     ref_force_name: str = "REF_forces",
     ref_virial_name: str = "REF_virial",
+    ref_stress_name: str = "REF_stress",
+    disable_testing: bool = False,
     fit_kwargs: dict | None = None,
 ) -> dict:
     """
@@ -1244,6 +1407,9 @@ def mace_fitting(
     This function sets up and executes a python script to perform MACE fitting using specified parameters
     and input data located in the provided directory. It handles the input/output of atomic configurations,
     sets up the NequIP model, and calculates training and testing errors after fitting.
+
+    Please note that we currently use energies, forces and virials/stresses for fitting MACE, if provided in
+    the database. We can further refine the fitting procedure in the future.
 
     Parameters
     ----------
@@ -1258,7 +1424,11 @@ def mace_fitting(
     ref_force_name : str, optional
         Reference force name.
     ref_virial_name : str, optional
-        Reference virial name.
+        Reference virial name. If ref_virial_name or ref_stress_name is provided, MACE will be trained on stress.
+    ref_stress_name : str, optional
+        Reference stress name. If ref_virial_name or ref_stress_name is provided, MACE will be trained on stress.
+    disable_testing: bool
+        Whether to disable running the model on test data.
     fit_kwargs: dict.
         optional dictionary with parameters for mace fitting with keys same as
         mlip-rss-defaults.json.
@@ -1291,17 +1461,39 @@ def mace_fitting(
         A dictionary containing train_error, test_error, and the path to the fitted MLIP.
 
     """
+    if hyperparameters is None:
+        from autoplex import MACE_HYPERS  # noqa: PLC0415
+
+        hyperparameters = MACE_HYPERS
     hyperparameters = hyperparameters.model_copy(deep=True)
 
-    if ref_virial_name is not None:
-        atoms = read(f"{db_dir}/train.extxyz", index=":")
-        mace_convert_virial_to_stress(
-            atoms=atoms, ref_virial_name=ref_virial_name, out_file_name="train.extxyz"
-        )
+    # at the moment, we simply use energies, forces and virials/stresses for fitting.
+    # TODO: we can further refine the fitting procedure in the future.
+    atoms = read(f"{db_dir}/train.extxyz", index=":")
+    mace_convert_virial_to_stress(
+        atoms=atoms,
+        ref_virial_name=ref_virial_name,
+        ref_stress_name=ref_stress_name,
+        out_file_name="train.extxyz",
+    )
+
+    atoms = read(f"{db_dir}/test.extxyz", index=":")
+    mace_convert_virial_to_stress(
+        atoms=atoms,
+        ref_virial_name=ref_virial_name,
+        ref_stress_name=ref_stress_name,
+        out_file_name="test.extxyz",
+    )
 
     hyperparameters.update_parameters(fit_kwargs)
 
     mace_hypers = hyperparameters.model_dump(by_alias=True, exclude_none=True)
+
+    parser = build_default_arg_parser()
+    allowed_mace_args = []
+    for action in parser._actions:
+        allowed_mace_args.extend(action.option_strings)
+    allowed_mace_args = [i.split("--")[-1] for i in allowed_mace_args]
 
     boolean_hypers = [
         "distributed",
@@ -1309,12 +1501,11 @@ def mace_fitting(
         "amsgrad",
         "swa",
         "stage_two",
-        "keep_checkpoint",
+        "keep_checkpoints",
         "save_all_checkpoints",
         "restart_latest",
         "save_cpu",
         "wandb",
-        "compute_statistics",
         "foundation_model_readout",
         "ema",
     ]
@@ -1332,6 +1523,10 @@ def mace_fitting(
 
     hypers = []
     for hyper in mace_hypers:
+        if hyper not in allowed_mace_args:
+            logging.error(f"Ignoring keyword {hyper} as it is no allowed mace keyword.")
+
+            continue
         if hyper in boolean_hypers:
             if mace_hypers[hyper] is True:
                 hypers.append(f"--{hyper}")
@@ -1344,19 +1539,25 @@ def mace_fitting(
         else:
             hypers.append(f"--{hyper}={mace_hypers[hyper]}")
 
-    hypers.append(f"--train_file={db_dir}/train.extxyz")
-    hypers.append(f"--valid_file={db_dir}/test.extxyz")
+    # we have now saved the train and test files in the current directory
+    # with default names "train.extxyz" and "test.extxyz"
+    hypers.append("--train_file=./train.extxyz")
+    if not disable_testing:
+        hypers.append("--valid_file=./test.extxyz")
+    else:
+        hypers.append("--valid_fraction=1")
 
+    # we will train on energy, forces and stresses for now.
+    # more options will follow in the future.
     if ref_energy_name is not None:
         hypers.append(f"--energy_key={ref_energy_name}")
     if ref_force_name is not None:
         hypers.append(f"--forces_key={ref_force_name}")
-    if ref_virial_name is not None:
-        hypers.append(
-            "--stress_key={'REF_stress'}"
-        )  # MACE will be trained on stress instead of virial.
-        # They are essentially equivalent, but since the MACE-torch log file directly
-        # reports the stress error, we train on stress for consistency.
+    if ref_virial_name is not None or ref_stress_name is not None:
+        hypers.append(f"--stress_key={ref_stress_name}")
+    # MACE will be trained on stress instead of virial.
+    # They are essentially equivalent, but since the MACE-torch log file directly
+    # reports the stress error, we train on stress for consistency.
     if device is not None:
         hypers.append(f"--device={device}")
 
@@ -1378,8 +1579,35 @@ def mace_fitting(
                 with open(f"./logs/{fit_kwargs['name']}_run-3.log") as file:
                     log_data = file.read()
 
+    energy_force_stress = check_energy_force_stress_reading(log_data)
+
+    if (
+        energy_force_stress["train_energy"] is False
+        or energy_force_stress["valid_energy"] is False
+    ):
+        logging.info("Energies are not used for training or validation.")
+
+    if (
+        energy_force_stress["train_forces"] is False
+        or energy_force_stress["valid_forces"] is False
+    ):
+        logging.info("Forces are not used for training or validation.")
+
+    if (
+        energy_force_stress["train_stress"] is False
+        or energy_force_stress["valid_stress"] is False
+    ):
+        logging.info("Stresses are not used for training or validation.")
+
+    # check if all keys in energy_force_stress are True, if yes, write a log info
+    if all(energy_force_stress[key] for key in energy_force_stress):
+        logging.info(
+            "Energies, forces and stresses are used for training and validation."
+        )
+
     tables = re.split(r"\+-+\+\n", log_data)
     # if tables:
+    logging.log(msg=len(tables), level=logging.INFO)
     last_table = tables[-2]
     try:
         matches = re.findall(
@@ -1390,7 +1618,7 @@ def mace_fitting(
 
         return {
             "train_error": float(matches[0][1]),
-            "test_error": float(matches[1][1]),
+            "test_error": float(matches[1][1]) if not disable_testing else None,
             "mlip_path": Path.cwd(),
         }
     except IndexError:
@@ -1399,9 +1627,119 @@ def mace_fitting(
 
         return {
             "train_error": float(matches[0][1]),
-            "test_error": float(matches[1][1]),
+            "test_error": float(matches[1][1]) if not disable_testing else None,
             "mlip_path": Path.cwd(),
         }
+
+
+def _extract_counts_from_line(line: str) -> tuple[int, int, int] | None:
+    """
+    Extract (energy, stress, forces) counts from a single summary line.
+
+    Parameters
+    ----------
+    line : str
+        A line from the log file, potentially containing dataset summary counts.
+        Should look like: "Total Training set [energy: 8, stress: 0, ..., forces: 8, ...]"
+
+    Returns
+    -------
+    tuple[int, int, int] or None
+        A tuple of (energy_count, stress_count, forces_count) if the pattern is found,
+        or None if the pattern is not found on this line.
+    """
+    m = re.search(r"energy:\s*(\d+)[^\n]*?stress:\s*(\d+)[^\n]*?forces:\s*(\d+)", line)
+    if not m:
+        return None
+    e, s, f = map(int, m.groups())
+    return e, s, f
+
+
+# --- helper: choose the “best” line for a split (prefer 'Total ... set') ---
+def _pick_line_for_split(lines, split_label: str) -> str | None:
+    """
+    Pick the best line for a given split (Training or Validation).
+
+    Prefers 'Total <split_label> set' line; falls back to '<split_label> set'.
+
+    Parameters
+    ----------
+    lines : list[str]
+        Lines from the log file to search.
+    split_label : str
+        The split identifier ('Training' or 'Validation').
+
+    Returns
+    -------
+    str or None
+        The best matching line, or None if no match found.
+    """
+    total = None
+    fallback = None
+    for ln in lines:
+        # Quick guards to avoid unrelated lines
+        if "energy:" not in ln:
+            continue
+        if f"Total {split_label} set" in ln:
+            total = ln
+        elif f"{split_label} set" in ln:
+            fallback = ln
+    return total or fallback
+
+
+def check_energy_force_stress_reading(log_data: str) -> dict[str, bool]:
+    """
+    Check if energies, forces, and stresses were read and parsed.
+
+    Parameters
+    ----------
+    log_data : str
+        The MACE log file content as a string.
+
+    Returns
+    -------
+    dict[str, bool]
+        A dictionary with keys indicating whether energies, forces, and stresses
+        were used (i.e., dataset summary counts > 0) for both Training and Validation:
+        - "train_energy": bool
+        - "train_forces": bool
+        - "train_stress": bool
+        - "valid_energy": bool
+        - "valid_forces": bool
+        - "valid_stress": bool
+    """
+    lines = log_data.splitlines()
+
+    train_line = _pick_line_for_split(lines, "Training")
+    valid_line = _pick_line_for_split(lines, "Validation")
+
+    # Defaults: if lines are missing or don't match, treat as not used (False)
+    out = {
+        "train_energy": False,
+        "train_forces": False,
+        "train_stress": False,
+        "valid_energy": False,
+        "valid_forces": False,
+        "valid_stress": False,
+    }
+
+    if train_line:
+        counts = _extract_counts_from_line(train_line)
+        if counts:
+            e, s, f = counts
+            out["train_energy"] = e > 0
+            out["train_forces"] = f > 0
+            out["train_stress"] = s > 0
+
+    if valid_line:
+        counts = _extract_counts_from_line(valid_line)
+        if counts:
+            e, s, f = counts
+            out["valid_energy"] = e > 0
+            out["valid_forces"] = f > 0
+            out["valid_stress"] = s > 0
+
+    return out
 
 
 def check_convergence(test_error: float) -> bool:
@@ -1926,11 +2264,54 @@ class CustomPotential(quippy.potential.Potential):
         res = super().calculate(*args, **kwargs)
         atoms = kwargs["atoms"] if "atoms" in kwargs else args[0]
         if "forces" in self.results:
-            atoms.arrays["forces"] = self.results["forces"].copy()
+            try:
+                atoms.arrays["forces"] = self.results["forces"].copy()
+            except AttributeError:
+                atoms.arrays["forces"] = self.results["forces"]
         if "energy" in self.results:
-            atoms.info["energy"] = self.results["energy"].copy()
+            try:
+                atoms.info["energy"] = self.results["energy"].copy()
+            except AttributeError:
+                atoms.info["energy"] = self.results["energy"]
         if "stress" in self.results:
-            atoms.info["stress"] = self.results["stress"].copy()
+            try:
+                atoms.info["stress"] = self.results["stress"].copy()
+            except AttributeError:
+                atoms.info["stress"] = self.results["stress"]
+        return res
+
+
+@requires(has_ypace, "pyace package must be installed to use PACEMAKER calculator.")
+class AutoplexPyACECalculator(PyACECalculator):
+    """
+    A specific wrapper for PyACECalculator to sync results back to atoms object.
+
+    Required for Autoplex workflows which inspect atoms.info/arrays directly.
+    """
+
+    def calculate(self, *args, **kwargs):
+        """Call the base PyACECalculator calculate which populates self.results."""
+        res = super().calculate(*args, **kwargs)
+
+        atoms_obj = kwargs["atoms"] if "atoms" in kwargs else args[0]
+
+        # Sync standard properties back to atoms object containers
+        if "forces" in self.results:
+            try:
+                atoms_obj.arrays["forces"] = self.results["forces"].copy()
+            except AttributeError:
+                atoms_obj.arrays["forces"] = self.results["forces"]
+        if "energy" in self.results:
+            try:
+                atoms_obj.info["energy"] = self.results["energy"].copy()
+            except AttributeError:
+                atoms_obj.info["energy"] = self.results["energy"]
+        if "stress" in self.results:
+            try:
+                atoms_obj.info["stress"] = self.results["stress"].copy()
+            except AttributeError:
+                atoms_obj.info["stress"] = self.results["stress"]
+
         return res
 
 
@@ -2046,6 +2427,7 @@ def prepare_fit_environment(
     database_dir: Path,
     mlip_path: Path,
     glue_xml: bool,
+    disable_testing: bool = False,
     train_name: str = "train.extxyz",
     test_name: str = "test.extxyz",
     glue_name: str = "glue.xml",
@@ -2061,6 +2443,8 @@ def prepare_fit_environment(
         Path to the MLIP fit run (cwd).
     glue_xml: bool
             use the glue.xml core potential instead of fitting 2b terms.
+    disable_testing: bool
+        Whether to disable running the model on test data.
     train_name: str
         name of the training data file.
     test_name: str
@@ -2075,7 +2459,7 @@ def prepare_fit_environment(
     os.makedirs(
         os.path.join(mlip_path, train_name.replace("train.extxyz", "")), exist_ok=True
     )
-    if not Path(mlip_path / test_name).exists():
+    if not (disable_testing or Path(mlip_path / test_name).exists()):
         shutil.copy(
             os.path.join(database_dir, test_name),
             os.path.join(mlip_path, test_name),
@@ -2202,7 +2586,7 @@ def write_after_distillation_data_split(
 
 
 def mace_convert_virial_to_stress(
-    atoms: list[Atoms], ref_virial_name: str, out_file_name: str
+    atoms: list[Atoms], ref_virial_name: str, ref_stress_name: str, out_file_name: str
 ) -> None:
     """
     Convert a virial vector into a stress tensor.
@@ -2213,14 +2597,507 @@ def mace_convert_virial_to_stress(
         input structures
     ref_virial_name: str
         virial label
+    ref_stress_name: str
+        stress label
     out_file_name: str
         name of output file
     """
     formatted_atoms = []
     for at in atoms:
         if ref_virial_name in at.info:
-            at.info["REF_stress"] = -at.info[ref_virial_name] / at.get_volume()
+            at.info[ref_stress_name] = -at.info[ref_virial_name] / at.get_volume()
             del at.info[ref_virial_name]
+            formatted_atoms.append(at)
+        else:
             formatted_atoms.append(at)
 
     write(out_file_name, formatted_atoms, format="extxyz")
+
+
+def convert_to_pacemaker_pickle(
+    atoms_list: list[Atoms],
+    output_filename: str,
+    isolated_atom_energies: dict | None = None,
+    ref_energy_name: str = "REF_energy",
+    ref_force_name: str = "REF_forces",
+) -> None:
+    """
+    Convert a list of ASE atoms to a pickled pandas DataFrame for Pacemaker.
+
+    Strictly follows Pacemaker requirements:
+    Columns: energy, forces, ase_atoms, energy_corrected.
+    """
+    data = []
+    atoms_for_export = []
+
+    e0_map = {}
+    if isolated_atom_energies:
+        for k, v in isolated_atom_energies.items():
+            if isinstance(k, int):
+                sym = chemical_symbols[k]
+                e0_map[sym] = v
+            elif isinstance(k, str) and k.isdigit():
+                sym = chemical_symbols[int(k)]
+                e0_map[sym] = v
+            else:
+                e0_map[k] = v
+        logging.info(f"Isolated atom energy map prepared for correction: {e0_map}")
+    else:
+        logging.warning(
+            "isolated_atom_energies is None or Empty! Energy correction will NOT be applied."
+        )
+
+    for at in atoms_list:
+        # 1. Total Energy (eV)
+        if ref_energy_name not in at.info:
+            logging.warning(
+                f"Energy key '{ref_energy_name}' missing in structure. Setting to 0.0"
+            )
+        energy = at.info.get(ref_energy_name, 0.0)
+
+        # 2. Forces (eV/A)
+        if ref_force_name in at.arrays:
+            forces = np.array(at.arrays[ref_force_name])
+        else:
+            logging.warning(f"Force key '{ref_force_name}' missing. Setting zeros.")
+            forces = np.zeros((len(at), 3))
+
+        # 3. Energy Corrected (Cohesive Energy)
+        # energy_corrected = E_total - sum(E_isolated)
+        energy_corrected = energy
+
+        if e0_map:
+            symbols = at.get_chemical_symbols()
+            for s in symbols:
+                if s in e0_map:
+                    energy_corrected -= e0_map[s]
+                else:
+                    logging.warning(
+                        f"Element '{s}' in structure not found in isolated_atom_energies."
+                    )
+
+        # Prepare atom for export
+        at_export = at.copy()
+
+        at_export.info["energy_corrected"] = energy_corrected
+        at_export.info[ref_energy_name] = energy
+        at_export.arrays[ref_force_name] = forces
+
+        atoms_for_export.append(at_export)
+
+        # 4. ASE Atoms Object
+        # Pacemaker needs positions, numbers/symbols, cell, pbc.
+        at_clean = at.copy()
+        at_clean.calc = None
+        # Keep info/arrays empty to save space, Pacemaker relies on the DF columns
+        at_clean.info = {}
+        at_clean.arrays = {
+            "numbers": at.arrays["numbers"],
+            "positions": at.arrays["positions"],
+        }
+        at_clean.set_pbc(at.get_pbc())
+        at_clean.set_cell(at.get_cell())
+
+        record = {
+            "energy": energy,
+            "forces": forces,
+            "ase_atoms": at_clean,
+            "energy_corrected": energy_corrected,
+        }
+        data.append(record)
+
+    df = pd.DataFrame(data)
+    # Ensure column order matches Pacemaker requirements
+    df = df[["energy", "forces", "ase_atoms", "energy_corrected"]]
+
+    # Save as compressed pickle, Protocol 4 is safe default
+    df.to_pickle(output_filename, compression="gzip", protocol=4)
+
+    # Save as .extxyz for users to use
+    extxyz_filename = output_filename.replace(".pckl.gzip", ".extxyz")
+    if extxyz_filename == output_filename:
+        extxyz_filename = f"{output_filename}.extxyz"
+
+    write(extxyz_filename, atoms_for_export, format="extxyz")
+
+    logging.info(
+        f"Converted {len(atoms_list)} structures to Pacemaker binary: {output_filename}"
+    )
+    logging.info(
+        f"Saved extxyz to: {extxyz_filename} (contains energy_corrected, {ref_energy_name}, {ref_force_name})"
+    )
+
+
+@requires(
+    shutil.which("pacemaker") is not None,
+    "Pacemaker fitting requires the 'pacemaker' executable to be in PATH.",
+)
+def pace_fitting(
+    db_dir: Path | str,
+    species_list: list[str] | None = None,
+    hyperparameters=None,
+    fit_kwargs: dict | None = None,
+    isolated_atom_energies: dict | None = None,
+    ref_energy_name: str = "REF_energy",
+    ref_force_name: str = "REF_forces",
+    ref_virial_name: str = "REF_virial",
+    num_processes_fit: int = 32,
+    train_name: str = "train.extxyz",
+    test_name: str = "test.extxyz",
+) -> dict:
+    """
+    Perform the ACE potential fitting using Pacemaker.
+
+    It creates the input.yaml configuration file for Pacemaker using the provided
+    hyperparameters and executes the fitting process via the 'pacemaker' command line tool.
+
+    Parameters
+    ----------
+    db_dir: Path or str
+        Directory containing the training and testing data files.
+    species_list: list[str] | None = None
+        List of chemical symbols (strings) involved in the system.
+    hyperparameters: PacemakerSettings
+        Fit hyperparameters defined in autoplex settings.
+    fit_kwargs: dict
+        Additional keyword arguments to override hyperparameters.
+    ref_energy_name: str
+        Name of the energy property in the dataset.
+    ref_force_name: str
+        Name of the force property in the dataset.
+    ref_virial_name: str
+        Name of the virial property in the dataset.
+    num_processes_fit: int
+        Number of processes/threads to use.
+    train_name: str
+        Name of the training dataset file.
+    test_name: str
+        Name of the test dataset file.
+
+    Returns
+    -------
+    dict
+        A dictionary containing 'train_error', 'test_error', and 'mlip_path'.
+    """
+    if hyperparameters is None:
+        from autoplex import PACEMAKER_HYPERS  # noqa: PLC0415
+
+        hyperparameters = PACEMAKER_HYPERS
+
+    # Defensive copy of hyperparameters
+    try:
+        hyperparameters = hyperparameters.model_copy(deep=True)
+    except AttributeError:
+        hyperparameters = (
+            hyperparameters.copy()
+            if isinstance(hyperparameters, dict)
+            else PacemakerSettings()
+        )
+
+    # 1. Prepare data conversion
+    train_bin_name = "train.pckl.gzip"
+    test_bin_name = "test.pckl.gzip"
+
+    src_train = Path(db_dir) / train_name
+    src_test = Path(db_dir) / test_name
+
+    if not src_train.exists():
+        raise FileNotFoundError(f"Training data not found: {src_train}")
+
+    logging.info(f"Loading training data from {src_train}...")
+    train_atoms = read(src_train, index=":")
+
+    # 2. Determine species_list with priority:
+    #    (1) User-provided species_list argument
+    #    (2) User-provided fit_kwargs["potential"]["elements"]
+    #    (3) Auto-infer from training data
+
+    final_species_list = None
+
+    # Priority 1: Direct argument
+    if species_list and len(species_list) > 0:
+        final_species_list = species_list
+        logging.info(f"Using species_list from argument: {final_species_list}")
+
+    # Priority 2: From fit_kwargs
+    if final_species_list is None and fit_kwargs:
+        potential_kwargs = fit_kwargs.get("potential", {})
+        if potential_kwargs.get("elements"):
+            final_species_list = potential_kwargs["elements"]
+            logging.info(
+                f"Using species_list from fit_kwargs['potential']['elements']: {final_species_list}"
+            )
+
+    # Priority 3: Auto-infer from training data
+    if final_species_list is None:
+        logging.info("species_list not provided. Inferring from training data...")
+        all_symbols = set()
+        for at in train_atoms:
+            # Skip isolated atoms for inference
+            if "config_type" in at.info and "IsolatedAtom" in at.info.get(
+                "config_type", ""
+            ):
+                continue
+            all_symbols.update(at.get_chemical_symbols())
+
+        if not all_symbols:
+            # If all structures are isolated atoms, get species from them too
+            for at in train_atoms:
+                all_symbols.update(at.get_chemical_symbols())
+
+        final_species_list = sorted(all_symbols)
+        logging.info(f"Inferred species_list from training data: {final_species_list}")
+
+    if not final_species_list:
+        raise ValueError(
+            "Could not determine species list for Pacemaker fitting. "
+            "Please set 'potential.elements' in fit_kwargs."
+        )
+
+    convert_to_pacemaker_pickle(
+        train_atoms,
+        train_bin_name,
+        isolated_atom_energies,
+        ref_energy_name,
+        ref_force_name,
+    )
+
+    has_test = src_test.exists()
+    if has_test:
+        logging.info(f"Loading test data from {src_test}...")
+        test_atoms = read(src_test, index=":")
+        convert_to_pacemaker_pickle(
+            test_atoms,
+            test_bin_name,
+            isolated_atom_energies,
+            ref_energy_name,
+            ref_force_name,
+        )
+
+    # 3. Configure hyperparameters
+    if fit_kwargs:
+        try:
+            hyperparameters.update_parameters(fit_kwargs)
+        except AttributeError:
+            with contextlib.suppress(AttributeError):
+                hyperparameters.update(fit_kwargs)
+
+    try:
+        pace_config = hyperparameters.model_dump(by_alias=True, exclude_none=True)
+    except AttributeError:
+        pace_config = hyperparameters
+
+    # 4. Set species list in potential section
+    if "potential" not in pace_config:
+        pace_config["potential"] = {}
+    pace_config["potential"]["elements"] = final_species_list
+
+    # 5. Ensure data section points to BINARY files
+    if "data" not in pace_config:
+        pace_config["data"] = {}
+
+    pace_config["data"]["filename"] = train_bin_name
+    if has_test:
+        pace_config["data"]["test_filename"] = test_bin_name
+
+    pace_config["data"]["energy_key"] = "energy_corrected"
+    pace_config["data"]["forces_key"] = "forces"
+
+    allowed_top_level_keys = {
+        "cutoff",
+        "seed",
+        "metadata",
+        "potential",
+        "data",
+        "fit",
+        "backend",
+    }
+    pace_config = {k: v for k, v in pace_config.items() if k in allowed_top_level_keys}
+
+    # 6. Write input.yaml
+    dumpfn(pace_config, "input.yaml")
+
+    # 7. Run Pacemaker
+    run_pacemaker("input.yaml", "pacemaker.log", num_processes=num_processes_fit)
+
+    # Locate the output potential file
+    potential_yaml_name = "output_potential.yaml"
+    potential_yaml_path = Path.cwd() / potential_yaml_name
+
+    # Fallback: search for alternative .yaml potential files if default not found
+    if not potential_yaml_path.exists():
+        yaml_candidates = [
+            f for f in Path.cwd().glob("*.yaml") if f.name != "input.yaml"
+        ]
+        if yaml_candidates:
+            potential_yaml_path = max(yaml_candidates, key=os.path.getctime)
+            potential_yaml_name = potential_yaml_path.name
+            logging.info(f"Using detected potential file: {potential_yaml_name}")
+
+    if not potential_yaml_path.exists():
+        logging.warning(
+            "No output potential .yaml file found. "
+            "Fitting may have failed or produced unexpected output."
+        )
+
+    # Optional: Convert to .yace format for LAMMPS compatibility
+    # This is not required for autoplex workflows (which use PyACE with .yaml directly via ASE)
+    output_yace_path = Path.cwd() / "output_potential.yace"
+    if potential_yaml_path.exists() and shutil.which("pace_yaml2yace"):
+        try:
+            subprocess.run(
+                [
+                    "pace_yaml2yace",
+                    str(potential_yaml_path),
+                    "-o",
+                    str(output_yace_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logging.info(f"Created {output_yace_path.name} for LAMMPS compatibility.")
+        except subprocess.CalledProcessError as e:
+            logging.warning(f"Optional .yace conversion failed: {e.stderr or e.stdout}")
+    elif not shutil.which("pace_yaml2yace"):
+        logging.debug("pace_yaml2yace not found. Skipping optional .yace conversion.")
+
+    # Parse errors from the pacemaker log file
+    train_error = 1.0  # eV/atom
+    test_error = 1.0  # eV/atom
+
+    try:
+        log_path = Path("pacemaker.log")
+        if log_path.exists():
+            log_content = log_path.read_text()
+
+            # Parse TRAIN error from "----Cycle last iteration:----" section
+            train_section_match = re.search(
+                r"-+Cycle last iteration:-+\s*\n(.*?)(?=-{40,}|$)",
+                log_content,
+                re.DOTALL,
+            )
+            if train_section_match:
+                train_section = train_section_match.group(1)
+                train_rmse_match = re.search(r"RMSE:\s+([\d.]+)", train_section)
+                if train_rmse_match:
+                    # Convert from meV/at to eV/at
+                    train_error = float(train_rmse_match.group(1)) / 1000.0
+                    logging.info(f"Parsed train energy RMSE: {train_error:.6f} eV/at")
+
+            # Parse TEST error from "----TEST Cycle last iteration:----" section
+            test_section_match = re.search(
+                r"-+TEST Cycle last iteration:-+\s*\n(.*?)(?=-{40,}|$)",
+                log_content,
+                re.DOTALL,
+            )
+            if test_section_match:
+                test_section = test_section_match.group(1)
+                test_rmse_match = re.search(r"RMSE:\s+([\d.]+)", test_section)
+                if test_rmse_match:
+                    # Convert from meV/at to eV/at
+                    test_error = float(test_rmse_match.group(1)) / 1000.0
+                    logging.info(f"Parsed test energy RMSE: {test_error:.6f} eV/at")
+
+            # Fallback: if specific sections not found, try to find the last TEST STATS
+            if test_error == 1.0:
+                # Find all TEST STATS sections and get the last one
+                test_stats_matches = list(
+                    re.finditer(
+                        r"-+TEST STATS-+\s*\n.*?RMSE:\s+([\d.]+)",
+                        log_content,
+                        re.DOTALL,
+                    )
+                )
+                if test_stats_matches:
+                    last_match = test_stats_matches[-1]
+                    test_error = float(last_match.group(1)) / 1000.0
+                    logging.info(
+                        f"Parsed test energy RMSE (fallback): {test_error:.6f} eV/at"
+                    )
+
+            # Fallback for train error
+            if train_error == 1.0:
+                # Find all FIT STATS sections and get the last one
+                fit_stats_matches = list(
+                    re.finditer(
+                        r"-+FIT STATS-+\s*\n.*?RMSE:\s+([\d.]+)", log_content, re.DOTALL
+                    )
+                )
+                if fit_stats_matches:
+                    last_match = fit_stats_matches[-1]
+                    train_error = float(last_match.group(1)) / 1000.0
+                    logging.info(
+                        f"Parsed train energy RMSE (fallback): {train_error:.6f} eV/at"
+                    )
+
+        else:
+            logging.warning("pacemaker.log not found. Using default error values.")
+
+    except Exception as e:
+        logging.warning(
+            f"Could not parse RMSE from pacemaker.log: {e}. Using default values."
+        )
+
+    logging.info(
+        f"Final errors - Train: {train_error:.6f} eV/at, Test: {test_error:.6f} eV/at"
+    )
+
+    return {
+        "train_error": train_error,
+        "test_error": test_error,
+        "mlip_path": Path.cwd(),
+    }
+
+
+def run_pacemaker(
+    input_file: str = "input.yaml",
+    log_file: str = "pacemaker.log",
+    num_processes: int = 1,
+) -> None:
+    """
+    Pacemaker runner.
+
+    Parameters
+    ----------
+    input_file: str
+        Name of the input YAML configuration file.
+    log_file: str
+        Name of the log file to capture stdout/stderr.
+    """
+    # Set environment variables for parallelism
+    env = os.environ.copy()
+    env["OMP_NUM_THREADS"] = str(num_processes)
+    env["MKL_NUM_THREADS"] = str(num_processes)
+    env["OPENBLAS_NUM_THREADS"] = str(num_processes)
+    env["VECLIB_MAXIMUM_THREADS"] = str(num_processes)
+    env["NUMEXPR_NUM_THREADS"] = str(num_processes)
+
+    with open(log_file, "w") as f_log:
+        try:
+            subprocess.run(
+                ["pacemaker", input_file],
+                check=True,
+                stdout=f_log,
+                stderr=subprocess.STDOUT,  # Redirect stderr to stdout so it goes to log
+            )
+        except subprocess.CalledProcessError:
+            # Read and print the log file content for debugging
+            log_path = Path(log_file)
+            if log_path.exists():
+                print(f"\n{'='*60}")
+                print(f"PACEMAKER FAILED! Log file content ({log_file}):")
+                print("=" * 60)
+                print(log_path.read_text())
+                print("=" * 60 + "\n")
+
+            # Also print input.yaml for debugging
+            input_path = Path(input_file)
+            if input_path.exists():
+                print(f"\n{'='*60}")
+                print(f"Input YAML content ({input_file}):")
+                print("=" * 60)
+                print(input_path.read_text())
+                print("=" * 60 + "\n")
+
+            raise
