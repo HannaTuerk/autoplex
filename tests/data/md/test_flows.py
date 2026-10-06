@@ -4,7 +4,7 @@ from ase.io import read
 from pymatgen.io.ase import AseAtomsAdaptor
 from autoplex.data.md.flows import MDAseMaker
 from jobflow import run_locally
-
+from atomate2.ase.md import MDEnsemble
 
 def test_mdasemaker_output_structure(test_dir, mock_vasp, memory_jobstore, clean_dir):
     atoms = bulk("Si", "diamond", a=5.43, cubic=True)
@@ -18,7 +18,7 @@ def test_mdasemaker_output_structure(test_dir, mock_vasp, memory_jobstore, clean
         rate_list=[0],
         time_step=1.0,
         traj_interval=1,
-        ensemble="nvt",
+        ensemble=MDEnsemble.nvt,
         dynamics="langevin",
         traj_file="MD.traj",
         traj_file_fmt="ase",

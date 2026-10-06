@@ -1,7 +1,6 @@
 """MD workflow jobs."""
 
 import logging
-from dataclasses import field
 
 from atomate2.forcefields.jobs import ForceFieldStaticMaker
 from atomate2.vasp.jobs.base import BaseVaspMaker
@@ -57,8 +56,11 @@ def do_md_single_step(
     store_trajectory: StoreTrajectoryOption = StoreTrajectoryOption.PARTIAL,
     traj_file: str | Path | None = None,
     traj_file_fmt: Literal["pmg", "ase", "xdatcar"] = "ase",
-    ionic_step_data: tuple[str, ...] | None = field(
-        default=("energy", "forces", "stress", "struct_or_mol")
+    ionic_step_data: tuple[str, ...] | None = (
+        "energy",
+        "forces",
+        "stress",
+        "struct_or_mol",
     ),
     dft_ref_file: str = "dft_md_ref.extxyz",
     include_isolated_atom: bool = False,
@@ -260,8 +262,8 @@ def do_md_single_step(
     do_dft_static = DFTStaticLabelling(
         e0_spin=e0_spin,
         isolatedatom_box=isolatedatom_box,
-        include_isolated_atom=include_isolated_atom,
-        include_dimer=include_dimer,
+        isolated_atom=include_isolated_atom,
+        dimer=include_dimer,
         dimer_box=dimer_box,
         dimer_range=dimer_range,
         dimer_num=dimer_num,
@@ -269,9 +271,9 @@ def do_md_single_step(
         custom_potcar=custom_potcar,
         static_energy_maker=static_energy_maker,
         static_energy_maker_isolated_atoms=static_energy_maker_isolated_atoms,
-        config_type=config_type,
     ).make(
         structures=do_data_sampling.output,
+        config_type=config_type,
     )
     do_data_collection = collect_dft_data(
         dft_ref_file=dft_ref_file,

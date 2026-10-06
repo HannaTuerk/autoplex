@@ -71,11 +71,15 @@ class MDAseMaker(ForceFieldMDMaker):
     """
 
     name: str = "ML-driven_MD_with_ASE"
+    jobprefix: str = ("",)
     temperature_list: list[float] = field(default_factory=list)
     eqm_step_list: list[int] | None = None
     rate_list: list[int] | None = None
     volume_custom_scale_factors: list[float] | None = None
     supercell_matrix: Matrix3D | None = None
+
+    #    def __post_init__(self):
+    #        self.name = f"{self.jobprefix}{self.name}"
 
     @job
     def make(self, structure: Structure):

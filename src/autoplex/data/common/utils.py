@@ -1598,6 +1598,46 @@ def flatten_list(input_list: list | list[list]) -> list:
     return input_list
 
 
+def handle_md_trajectory(
+    traj_path: list | None = None,
+    remove_traj_files: bool = False,
+) -> tuple[list[list], list[list]]:
+    """
+    Handle trajectory and associated information.
+
+    Parameters
+    ----------
+    traj_path: list
+        List of paths pointing to trajectory files to be processed.
+        Default is None.
+    remove_traj_files: bool
+        Whether to remove the directories containing trajectory files
+        after processing them. Default is False.
+
+    Returns
+    -------
+    tuple:
+        atoms: list
+            List of ASE Atoms objects read from the trajectory files.
+    """
+    atoms = []
+    traj_path = [] if traj_path is None else flatten_list(traj_path)
+
+    if all(i is None for i in traj_path):
+        raise ValueError("No valid trajectory path was obtained!")
+
+    for traj in traj_path:
+        if traj is not None and Path(traj).exists():
+            logging.info(f"Processing trajectory:, {traj}")
+            atoms = ase.io.read(traj, index=":")
+            # atoms.append(at)
+
+            if remove_traj_files:
+                logging.warning(f"The trajectory file is deleted: {traj}")
+                os.remove(traj)
+    return atoms
+
+
 def handle_rss_trajectory(
     traj_path, remove_traj_files
 ) -> tuple[list[list], list[list]]:

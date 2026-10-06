@@ -41,6 +41,10 @@ class AutoplexSettings(BaseSettings):
     All rights reserved.
     """
 
+    jobprefix: str | None = Field(
+        default="",
+        description="Name of the calculation used in the jobmanager as prefix.",
+    )
     CONFIG_FILE: str = Field(
         _DEFAULT_CONFIG_FILE_PATH, description="File to load alternative defaults from."
     )
@@ -205,10 +209,6 @@ class CustomIncar(AutoplexBaseModel):
 class RssConfig(AutoplexBaseModel):
     """A model describing the complete RSS configuration."""
 
-    jobprefix: str | None = Field(
-        default="",
-        description="Name of the calculation used in the jobmanager as prefix.",
-    )
     tag: str | None = Field(
         default=None,
         description="Tag of systems. It can also be used for setting up elements "

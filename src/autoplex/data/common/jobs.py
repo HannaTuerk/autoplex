@@ -36,6 +36,7 @@ from autoplex.data.common.utils import (
     cur_select,
     data_distillation,
     flatten,
+    handle_md_trajectory,
     handle_rss_trajectory,
     mc_rattle,
     random_vary_angle,
@@ -340,6 +341,7 @@ def sample_data(
     dir: list[str] | str | None = None,
     structure: list[Structure] | list[list[Structure]] | None = None,
     traj_path: list | None = None,
+    traj_type: Literal["rss", "md"] = "rss",
     isolated_atom_energies: dict | None = None,
     random_seed: int = None,
     remove_traj_files: bool = False,
@@ -388,6 +390,8 @@ def sample_data(
         Directory containing trajectory files for MD/RSS simulations. Default is None.
     structure: list[Structure]
         List of structures for sampling. Default is None.
+    traj_type: Literal["rss", "md"]
+        Specifies the type of trajectory to process, where 'rss' and 'md' represent different trajectory formats.
     traj_path: list[list[str]]
         List of lists containing trajectory paths. Default is None.
     isolated_atom_energies: dict
@@ -440,7 +444,12 @@ def sample_data(
         atoms = [AseAtomsAdaptor().get_atoms(at) for at in structure]
 
     else:
-        atoms, pressures = handle_rss_trajectory(traj_path, remove_traj_files)
+        if traj_type == "rss":
+            atoms, pressures = handle_rss_trajectory(traj_path, remove_traj_files)
+        elif traj_type == "md":
+            atoms = handle_md_trajectory(traj_path, remove_traj_files)
+
+    print("deletemeatoms", atoms)
 
     if selection_method in {"cur", "bcur1s", "bcur2i"}:
         n_species = ElementCollection(
