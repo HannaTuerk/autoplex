@@ -18,7 +18,7 @@ from ase.io import read
 from ase.stress import voigt_6_to_full_3x3_stress
 from ase.units import GPa
 from atomate2.common.files import gzip_files
-from jobflow import Flow, Maker, job
+from jobflow import Maker, job
 from pymatgen.io.ase import AseAtomsAdaptor
 
 from autoplex.misc.castep.run import run_castep
@@ -27,7 +27,7 @@ from autoplex.misc.castep.utils import (
     CASTEP_INPUT_FILES,
     CASTEP_OUTPUT_FILES,
     CastepInputGenerator,
-    CastepRelaxSetGenerator,
+    CastepMagresSetGenerator,
     CastepStaticSetGenerator,
 )
 from autoplex.settings import SETTINGS
@@ -106,7 +106,7 @@ class BaseCastepMaker(Maker):
     def __post_init__(self):  # noqa: D105
         self.name = f"{self.jobprefix}{self.name}"
 
-    @job
+    @castep_job
     def make(self, structure: Structure):
         """
         Run a CASTEP calculation.
@@ -174,6 +174,7 @@ class BaseCastepMaker(Maker):
         run_castep(calc)
 
         workdir = os.path.join(os.getcwd(), "CASTEP")
+
         atoms = read(os.path.join(workdir, "castep.castep"))
         gzip_files(directory=workdir, include_files=_FILES_TO_ZIP, allow_missing=True)
 
@@ -239,59 +240,61 @@ class CastepStaticMaker(BaseCastepMaker):
 
 
 @dataclass
-class CastepRelaxMaker(BaseCastepMaker):
+class CastepMagresMaker(BaseCastepMaker):
     """
-    Maker to run a single CASTEP geometry optimization.
+    Maker to create CASTEP magres (NMR prediction) jobs.
+
+    This class creates NMR predictions using CASTEP
 
     Parameters
     ----------
     name : str
-        Job name.
-    input_set_generator : CastepRelaxSetGenerator
-        Generator for CASTEP input settings.
+        The job name (default: "magres").
+    input_set_generator : CastepInputGenerator
+        Generator used to create the CASTEP input set,
+        including .param and .cell settings.
+        (default: CastepMagresSetGenerator()).
+    jobprefix: str
+        The prefix that precedes the jobname.
     """
 
-    name: str = "castep_relax"
+    name: str = "magres"
     input_set_generator: CastepInputGenerator = field(
-        default_factory=CastepRelaxSetGenerator
+        default_factory=CastepMagresSetGenerator
     )
+    jobprefix: str = ""
 
+    def __post_init__(self):  # noqa: D105
+        self.name = f"{self.jobprefix}{self.name}"
 
-@dataclass
-class CastepDoubleRelaxMaker(CastepRelaxMaker):
-    """
-    Maker to run two consecutive CASTEP relaxations.
-
-    The first relaxation runs on the initial structure,
-    and the second uses the first output structure as input
-    to refine the result.
-
-    Parameters
-    ----------
-    name : str
-        Job name.
-    """
-
-    name: str = "castep_double_relax"
-
-    def make(self, structure: Structure):
+    @castep_job
+    def make(self, structure: Structure) -> TaskDoc:
         """
-        Run two consecutive CASTEP relaxations.
+        Run a CASTEP magres (NMR) calculation and parse the .magres output.
 
         Parameters
         ----------
-        structure: Structure
-            A pymatgen Structure object.
+        structure : Structure
+            A pymatgen structure object.
 
         Returns
         -------
-        output: dict
-            Output of the second relaxation step.
+        TaskDoc
+            Task document with the magnetic shielding and EFG tensors added.
+
+            Tensors follow output.structure's atom order, which can be different from the input order
+            since CASTEP rearranges it.
         """
-        jobs = []
-        first_job = CastepRelaxMaker.make(self, structure)
-        first_job.name = "relax_1"
-        second_job = CastepRelaxMaker.make(self, first_job.output.structure)
-        second_job.name = "relax_2"
-        jobs = [first_job, second_job]
-        return Flow(jobs=jobs, output=second_job.output, name=self.name)
+        workdir = os.path.join(os.getcwd(), "CASTEP")
+
+        base_task_doc = super().make.original(self, structure)
+
+        atoms = read(os.path.join(workdir, "castep.magres.gz"), format="magres")
+        shielding = atoms.get_array("ms").tolist() if "ms" in atoms.arrays else None
+
+        efg = atoms.get_array("efg").tolist() if "efg" in atoms.arrays else None
+
+        base_task_doc.output.ms_tensor = shielding
+        base_task_doc.output.efg_tensor = efg
+
+        return base_task_doc

@@ -30,6 +30,7 @@ CASTEP_OUTPUT_FILES = [
     "*.den_fmt",
     "*.pot_fmt",
     "*.wvfn_fmt",
+    "*.magres",
     "final_atoms_object.xyz",
     "final_atoms_object.traj",
 ]
@@ -225,73 +226,60 @@ class CastepStaticSetGenerator(CastepInputGenerator):
 
 
 @dataclass
-class CastepRelaxSetGenerator(CastepInputGenerator):
+class CastepMagresSetGenerator(CastepInputGenerator):
     """
-    Class to generate CASTEP structure relaxation (geometry optimization) input sets.
+    Class to generate CASTEP input sets for task: magres (NMR prediction).
 
-    This class creates input parameters for CASTEP relax calculations,
-    similar to VASP RelaxSetGenerator in atomate2.
+    This class creates input parameters for CASTEP NMR predictions
 
     Parameters
     ----------
-    tight : bool
-        Whether to use tighter convergence settings (for high-precision relaxation).
-    variable_cell : bool
-        Whether to relax both atomic positions and cell parameters (cell optimization).
-    stress_tol : float
-        Target stress tolerance in GPa.
+    use_efg: bool
+        Whether to calculate the EFG alongside the shielding tensor, default True
     **kwargs
-        Other keyword arguments passed to CastepInputGenerator.
+        Other keyword arguments passed to CastepInputGenerator
     """
 
     CONFIG: dict = field(
         default_factory=lambda: {
             "PARAM": {
-                "task": "GeometryOptimization",
-                "calculate_stress": "True",
+                "task": "magres",
             }
         }
     )
-    tight: bool = False
-    variable_cell: bool = True
+    use_efg: bool = True
 
     @property
     def param_updates(self) -> dict:
-        """Return a dictionary of CASTEP input parameter updates."""
+        """
+        Get updates to the PARAM for a magres CASTEP job.
+
+        Returns
+        -------
+        dict
+            Dictionary of CASTEP .param file parameters for NMR prediction
+        """
+        # preliminary parameters from https://www.ccpnc.ac.uk/docs/castep-for-nmr-calculations#nmrcalculations
         updates = {
-            "task": "GeometryOptimization",
-            "cut_off_energy": 520.0,
             "xc_functional": "PBE",
-            "elec_energy_tol": 1e-05,
-            "geom_energy_tol": 1e-04,
-            "geom_force_tol": 0.05,
-            "geom_stress_tol": 0.1,
-            "max_scf_cycles": 100,
-            "smearing_width": 0.1,
+            "cut_off_energy": 600.0,
         }
-        if self.tight:
-            updates.update(
-                {
-                    "elec_energy_tol": 1e-06,
-                    "geom_energy_tol": 1e-05,
-                    "geom_force_tol": 0.01,
-                    "geom_stress_tol": 0.005,
-                    "cut_off_energy": 600.0,
-                    "smearing_width": 0.05,
-                }
-            )
+        if self.use_efg:
+            updates.update({"magres_task": "NMR"})
+            # NMR includes both EFG and MS
+        else:
+            updates.update({"magres_task": "SHIELDING"})
+            # might not be necessary since shielding is the default
         return updates
 
     @property
     def cell_updates(self) -> dict:
-        """Return a dictionary of CASTEP cell parameter updates."""
-        updates = {
-            "kpoints_mp_spacing": 0.04,
-            "symmetry_generate": True,
-            "symmetry_tol": 1.0e-5,
-        }
-        if self.variable_cell:
-            updates.update({"fix_all_cell": None})
-        else:
-            updates.update({"fix_all_cell": True})
-        return updates
+        """
+        Get updates to the CELL for a magres CASTEP job.
+
+        Returns
+        -------
+        dict
+            Dictionary of CASTEP .cell file parameters for NMR prediction
+        """
+        return {}
